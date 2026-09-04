@@ -1,0 +1,40 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HDRCalibrate", "src\HDRCalibrate\HDRCalibrate.csproj", "{2D51638B-EEA8-4F70-BC76-64242858D8FA}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HDRCalibrate.Tests", "tests\HDRCalibrate.Tests\HDRCalibrate.Tests.csproj", "{8B531D0C-15B8-4D18-93CE-3EC4A95E3C11}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HDRCalibrate.Dwm", "src\HDRCalibrate.Dwm\HDRCalibrate.Dwm.csproj", "{1C5F8CA7-0E2D-4815-B335-6FE3B74B3CA2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HDRCalibrate.DwmHelper", "src\HDRCalibrate.DwmHelper\HDRCalibrate.DwmHelper.csproj", "{E8869043-FD45-4E45-B462-03F30D6DDDE3}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{2D51638B-EEA8-4F70-BC76-64242858D8FA}.Debug|x64.ActiveCfg = Debug|x64
+		{2D51638B-EEA8-4F70-BC76-64242858D8FA}.Debug|x64.Build.0 = Debug|x64
+		{2D51638B-EEA8-4F70-BC76-64242858D8FA}.Release|x64.ActiveCfg = Release|x64
+		{2D51638B-EEA8-4F70-BC76-64242858D8FA}.Release|x64.Build.0 = Release|x64
+		{8B531D0C-15B8-4D18-93CE-3EC4A95E3C11}.Debug|x64.ActiveCfg = Debug|x64
+		{8B531D0C-15B8-4D18-93CE-3EC4A95E3C11}.Debug|x64.Build.0 = Debug|x64
+		{8B531D0C-15B8-4D18-93CE-3EC4A95E3C11}.Release|x64.ActiveCfg = Release|x64
+		{8B531D0C-15B8-4D18-93CE-3EC4A95E3C11}.Release|x64.Build.0 = Release|x64
+		{1C5F8CA7-0E2D-4815-B335-6FE3B74B3CA2}.Debug|x64.ActiveCfg = Debug|x64
+		{1C5F8CA7-0E2D-4815-B335-6FE3B74B3CA2}.Debug|x64.Build.0 = Debug|x64
+		{1C5F8CA7-0E2D-4815-B335-6FE3B74B3CA2}.Release|x64.ActiveCfg = Release|x64
+		{1C5F8CA7-0E2D-4815-B335-6FE3B74B3CA2}.Release|x64.Build.0 = Release|x64
+		{E8869043-FD45-4E45-B462-03F30D6DDDE3}.Debug|x64.ActiveCfg = Debug|x64
+		{E8869043-FD45-4E45-B462-03F30D6DDDE3}.Debug|x64.Build.0 = Debug|x64
+		{E8869043-FD45-4E45-B462-03F30D6DDDE3}.Release|x64.ActiveCfg = Release|x64
+		{E8869043-FD45-4E45-B462-03F30D6DDDE3}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

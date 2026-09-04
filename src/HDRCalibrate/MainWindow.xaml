@@ -1,0 +1,309 @@
+<Window x:Class="HDRCalibrate.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="HDR Calibrate 1.3.0 · Safe SDR Constant Patch"
+        Width="1160" Height="820" MinWidth="960" MinHeight="700"
+        WindowStartupLocation="CenterScreen"
+        Background="{StaticResource WindowBrush}">
+    <Window.Resources>
+        <Style x:Key="PillStyle" TargetType="Border">
+            <Setter Property="Background" Value="#192534" />
+            <Setter Property="BorderBrush" Value="{StaticResource LineBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="12" />
+            <Setter Property="Padding" Value="10,4" />
+            <Setter Property="Margin" Value="0,0,8,0" />
+        </Style>
+        <Style x:Key="MetricValueStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="FontSize" Value="15" />
+            <Setter Property="Margin" Value="0,4,0,0" />
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Padding="30,22,30,20">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <Border Width="34" Height="34" CornerRadius="9" Background="#17382E" Margin="0,0,12,0">
+                            <TextBlock Text="◐" Foreground="{StaticResource AccentBrush}" FontSize="23"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <TextBlock Text="HDR Calibrate" FontSize="25" FontWeight="SemiBold"
+                                   Foreground="{StaticResource TextBrush}" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <TextBlock Text="SDR-only-Farbkorrektur im Windows-DWM bei aktivem HDR"
+                               Foreground="{StaticResource MutedBrush}" Margin="46,4,0,0" />
+                </StackPanel>
+                <Button Grid.Column="1" Content="Windows HDR-Einstellungen" Command="{Binding OpenWindowsHdrCommand}"
+                        VerticalAlignment="Center" />
+            </Grid>
+        </Border>
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <Grid Margin="30,24,30,22">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="18" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <Border Grid.Row="0" Style="{StaticResource CardStyle}">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="16" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="Monitor" Style="{StaticResource LabelStyle}" Margin="0,0,0,7" />
+                                <ComboBox ItemsSource="{Binding Displays}" SelectedItem="{Binding SelectedDisplay}"
+                                          MinWidth="390">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding DisplayLabel}" Foreground="{StaticResource TextBrush}"
+                                                       TextTrimming="CharacterEllipsis" />
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+                            </StackPanel>
+                            <Button Grid.Column="1" Content="Neu erkennen" Command="{Binding RefreshCommand}"
+                                    VerticalAlignment="Bottom" Margin="14,0,0,0" />
+                        </Grid>
+
+                        <Grid Grid.Row="2">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="1.4*" />
+                                <ColumnDefinition Width="0.7*" />
+                                <ColumnDefinition Width="0.7*" />
+                                <ColumnDefinition Width="0.7*" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal">
+                                    <Border Style="{StaticResource PillStyle}">
+                                        <TextBlock Text="{Binding DisplayStatus}" FontSize="11" FontWeight="Bold">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Foreground" Value="#F2B96B" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsHdrActive}" Value="True">
+                                                            <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </Border>
+                                    <Border Style="{StaticResource PillStyle}">
+                                        <TextBlock Text="{Binding DwmStatus}" FontSize="11" Foreground="{StaticResource MutedBrush}" />
+                                    </Border>
+                                </StackPanel>
+                                <TextBlock Text="Aktives Advanced-Color-Profil" Style="{StaticResource LabelStyle}" Margin="0,10,0,0" />
+                                <TextBlock Text="{Binding ActiveProfile}" Style="{StaticResource MetricValueStyle}"
+                                           TextTrimming="CharacterEllipsis" ToolTip="{Binding ActiveProfile}" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Margin="22,0,0,0">
+                                <TextBlock Text="Ausgabe" Style="{StaticResource LabelStyle}" />
+                                <TextBlock Text="{Binding BitDepth}" Style="{StaticResource MetricValueStyle}" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="2" Margin="22,0,0,0">
+                                <TextBlock Text="SDR-Weiß" Style="{StaticResource LabelStyle}" />
+                                <TextBlock Text="{Binding SdrWhite}" Style="{StaticResource MetricValueStyle}" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="3" Margin="22,0,0,0">
+                                <TextBlock Text="HDR-Spitze" Style="{StaticResource LabelStyle}" />
+                                <TextBlock Text="{Binding PeakLuminance}" Style="{StaticResource MetricValueStyle}" />
+                            </StackPanel>
+                        </Grid>
+                    </Grid>
+                </Border>
+
+                <Grid Grid.Row="2">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="1.1*" />
+                        <ColumnDefinition Width="18" />
+                        <ColumnDefinition Width="1*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border Grid.Column="0" Style="{StaticResource CardStyle}">
+                        <StackPanel>
+                            <TextBlock Text="Tonwerte" Style="{StaticResource SectionTitleStyle}" />
+
+                            <Grid Margin="0,0,0,16" ToolTip="Ersetzt ausschließlich die von DWM als SDR klassifizierte sRGB→scRGB-Umwandlung. Native HDR-Shader werden nicht geändert.">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition />
+                                    <RowDefinition />
+                                    <RowDefinition />
+                                    <RowDefinition />
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="74"/></Grid.ColumnDefinitions>
+                                <TextBlock Text="SDR-Zielgamma" Style="{StaticResource LabelStyle}" />
+                                <TextBlock Grid.Column="1" Text="{Binding Gamma, StringFormat={}{0:0.0}}" Style="{StaticResource ValueStyle}" />
+                                <Slider Grid.Row="1" Grid.ColumnSpan="2" Minimum="1.8" Maximum="2.6" TickFrequency="0.1"
+                                        Value="{Binding Gamma, UpdateSourceTrigger=PropertyChanged}" />
+                                <UniformGrid Grid.Row="2" Grid.ColumnSpan="2" Columns="4" Margin="0,4,0,9">
+                                    <Button Content="2,0" Command="{Binding SetGammaPresetCommand}" CommandParameter="2.0" Padding="7,4" Margin="0,0,5,0" />
+                                    <Button Content="2,2" Command="{Binding SetGammaPresetCommand}" CommandParameter="2.2" Padding="7,4" Margin="0,0,5,0" />
+                                    <Button Content="2,4" Command="{Binding SetGammaPresetCommand}" CommandParameter="2.4" Padding="7,4" Margin="0,0,5,0" />
+                                    <Button Content="2,6" Command="{Binding SetGammaPresetCommand}" CommandParameter="2.6" Padding="7,4" />
+                                </UniformGrid>
+                                <CheckBox Grid.Row="3" Grid.ColumnSpan="2"
+                                          IsChecked="{Binding ApplySdrGammaCorrection}">
+                                    <TextBlock Text="SDR-in-HDR-Zielgamma anwenden"
+                                               Foreground="{StaticResource TextBrush}" />
+                                </CheckBox>
+                            </Grid>
+
+                            <Grid Margin="0,0,0,16">
+                                <Grid.RowDefinitions><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="74"/></Grid.ColumnDefinitions>
+                                <TextBlock Text="Helligkeit" Style="{StaticResource LabelStyle}" />
+                                <TextBlock Grid.Column="1" Text="{Binding BrightnessPercent, StringFormat={}{0:+0;-0;0} %}" Style="{StaticResource ValueStyle}" />
+                                <Slider Grid.Row="1" Grid.ColumnSpan="2" Minimum="-20" Maximum="20" TickFrequency="1"
+                                        Value="{Binding BrightnessPercent, UpdateSourceTrigger=PropertyChanged}" />
+                            </Grid>
+
+                            <Grid Margin="0,0,0,14" IsEnabled="False" Opacity="0.5"
+                                  ToolTip="Im sicheren Konstantenmodus deaktiviert: Kontrast würde einen vollständigen Windows-Shaderersatz benötigen.">
+                                <Grid.RowDefinitions><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="74"/></Grid.ColumnDefinitions>
+                                <TextBlock Text="Kontrast" Style="{StaticResource LabelStyle}" />
+                                <TextBlock Grid.Column="1" Text="{Binding Contrast, StringFormat={}{0:0.00}}" Style="{StaticResource ValueStyle}" />
+                                <Slider Grid.Row="1" Grid.ColumnSpan="2" Minimum="0.5" Maximum="1.5" TickFrequency="0.01"
+                                        Value="{Binding Contrast, UpdateSourceTrigger=PropertyChanged}" />
+                            </Grid>
+
+                            <Border Background="#0E141D" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
+                                    CornerRadius="8" Padding="12" Margin="0,4,0,0">
+                                <StackPanel>
+                                    <TextBlock Text="SDR-Code → lineares scRGB" Style="{StaticResource LabelStyle}" Margin="0,0,0,8" />
+                                    <Viewbox Stretch="Fill" Height="112">
+                                        <Canvas Width="360" Height="112" ClipToBounds="True">
+                                            <Line X1="0" Y1="112" X2="360" Y2="0" Stroke="#405069" StrokeThickness="1" StrokeDashArray="4,4" />
+                                            <Polyline Points="{Binding CurvePoints}" Stroke="{StaticResource AccentBlueBrush}"
+                                                      StrokeThickness="2.5" StrokeLineJoin="Round" />
+                                        </Canvas>
+                                    </Viewbox>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Column="2" Style="{StaticResource CardStyle}">
+                        <StackPanel>
+                            <TextBlock Text="Farbe · sicher gesperrt" Style="{StaticResource SectionTitleStyle}" />
+
+                            <Grid Margin="0,0,0,20" IsEnabled="False" Opacity="0.5"
+                                  ToolTip="Im sicheren Konstantenmodus deaktiviert: Sättigung würde einen vollständigen Windows-Shaderersatz benötigen.">
+                                <Grid.RowDefinitions><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="74"/></Grid.ColumnDefinitions>
+                                <TextBlock Text="Sättigung" Style="{StaticResource LabelStyle}" />
+                                <TextBlock Grid.Column="1" Text="{Binding SaturationPercent, StringFormat={}{0:0} %}" Style="{StaticResource ValueStyle}" />
+                                <Slider Grid.Row="1" Grid.ColumnSpan="2" Minimum="0" Maximum="200" TickFrequency="1"
+                                        Value="{Binding SaturationPercent, UpdateSourceTrigger=PropertyChanged}" />
+                            </Grid>
+
+                            <TextBlock Text="RGB-Balance" Style="{StaticResource LabelStyle}" Margin="0,0,0,12" Opacity="0.5" />
+                            <Grid Margin="0,0,0,14" IsEnabled="False" Opacity="0.5"
+                                  ToolTip="Im sicheren Konstantenmodus deaktiviert: RGB-Balance würde einen vollständigen Windows-Shaderersatz benötigen.">
+                                <Grid.RowDefinitions><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="74"/></Grid.ColumnDefinitions>
+                                <TextBlock Text="Rot" Foreground="#FF8A87" />
+                                <TextBlock Grid.Column="1" Text="{Binding RedGainPercent, StringFormat={}{0:0} %}" Style="{StaticResource ValueStyle}" />
+                                <Slider Grid.Row="1" Grid.ColumnSpan="2" Minimum="50" Maximum="150" TickFrequency="1"
+                                        Value="{Binding RedGainPercent, UpdateSourceTrigger=PropertyChanged}" />
+                            </Grid>
+                            <Grid Margin="0,0,0,14" IsEnabled="False" Opacity="0.5"
+                                  ToolTip="Im sicheren Konstantenmodus deaktiviert: RGB-Balance würde einen vollständigen Windows-Shaderersatz benötigen.">
+                                <Grid.RowDefinitions><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="74"/></Grid.ColumnDefinitions>
+                                <TextBlock Text="Grün" Foreground="#70DFA8" />
+                                <TextBlock Grid.Column="1" Text="{Binding GreenGainPercent, StringFormat={}{0:0} %}" Style="{StaticResource ValueStyle}" />
+                                <Slider Grid.Row="1" Grid.ColumnSpan="2" Minimum="50" Maximum="150" TickFrequency="1"
+                                        Value="{Binding GreenGainPercent, UpdateSourceTrigger=PropertyChanged}" />
+                            </Grid>
+                            <Grid Margin="0,0,0,22" IsEnabled="False" Opacity="0.5"
+                                  ToolTip="Im sicheren Konstantenmodus deaktiviert: RGB-Balance würde einen vollständigen Windows-Shaderersatz benötigen.">
+                                <Grid.RowDefinitions><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="74"/></Grid.ColumnDefinitions>
+                                <TextBlock Text="Blau" Foreground="#76B8FF" />
+                                <TextBlock Grid.Column="1" Text="{Binding BlueGainPercent, StringFormat={}{0:0} %}" Style="{StaticResource ValueStyle}" />
+                                <Slider Grid.Row="1" Grid.ColumnSpan="2" Minimum="50" Maximum="150" TickFrequency="1"
+                                        Value="{Binding BlueGainPercent, UpdateSourceTrigger=PropertyChanged}" />
+                            </Grid>
+
+                            <Border Background="#162638" BorderBrush="#365A79" BorderThickness="1"
+                                     CornerRadius="8" Padding="12" Margin="0,0,0,18">
+                                <StackPanel>
+                                    <TextBlock Foreground="#76B8FF" FontWeight="SemiBold"
+                                               Text="ABI-erhaltender SDR-Konstantenmodus" />
+                                    <TextBlock Foreground="#B8CCE3" FontSize="11" TextWrapping="Wrap" Margin="0,7,0,0"
+                                               Text="Nur 16 freigegebene Zahlenwerte im originalen Windows-SHDR-Code werden geändert. Shadercontainer, Aon9-Linkage, Funktionssignaturen, Anwendungen und native HDR-Shader bleiben unverändert." />
+                                    <TextBlock Foreground="#8FA8C3" FontSize="11" TextWrapping="Wrap" Margin="0,7,0,0"
+                                               Text="Kontrast, Sättigung und RGB-Balance bleiben deaktiviert. Vor dauerhaftem Anwenden muss die aktuelle Gamma-/Helligkeitskombination fünf Sekunden mit unabhängigem Watchdog getestet werden." />
+                                </StackPanel>
+                            </Border>
+
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Button Content="Neutral" Command="{Binding NeutralCommand}" />
+                                <Button Grid.Column="1" Content="5 Sekunden testen" Command="{Binding TestCommand}"
+                                        ToolTipService.ShowOnDisabled="True"
+                                        Margin="10,0,0,0" MinWidth="136"
+                                        ToolTip="Testet die aktuellen SDR-Werte. Ein unabhängiger erhöhter Watchdog startet DWM danach garantiert ungepatcht neu." />
+                                <Button Grid.Column="2" Content="Anwenden" Command="{Binding ApplyCommand}"
+                                        ToolTipService.ShowOnDisabled="True"
+                                        ToolTip="Wird nach einem erfolgreichen 5-Sekunden-Test genau dieser Einstellung freigeschaltet."
+                                        Style="{StaticResource PrimaryButtonStyle}" Margin="10,0,0,0" MinWidth="118" />
+                            </Grid>
+                            <Button Content="DWM-Korrektur entfernen (ungepatcht neu starten)" Command="{Binding ResetProfileCommand}"
+                                    Margin="0,10,0,0" HorizontalAlignment="Stretch" />
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </Grid>
+        </ScrollViewer>
+
+        <Border Grid.Row="2" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Padding="30,11">
+            <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <Ellipse Width="8" Height="8" Margin="0,0,10,0" VerticalAlignment="Center">
+                    <Ellipse.Style>
+                        <Style TargetType="Ellipse">
+                            <Setter Property="Fill" Value="{StaticResource AccentBrush}" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsError}" Value="True">
+                                    <Setter Property="Fill" Value="#FF776F" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Ellipse.Style>
+                </Ellipse>
+                <TextBlock Grid.Column="1" Text="{Binding StatusMessage}" Foreground="{StaticResource MutedBrush}"
+                           TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                <TextBlock Grid.Column="2" Text="v1.3.0 · Safe Constant Patch · WPF · .NET Framework 4.8.1" Foreground="#65758B" FontSize="11" />
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

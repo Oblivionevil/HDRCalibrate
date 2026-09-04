@@ -1,0 +1,20 @@
+# Visual Studio / MSBuild
+.vs/
+**/bin/
+**/obj/
+*.user
+*.suo
+*.pdb
+
+# Test and diagnostic output
+TestResults/
+**/artifacts/
+
+# Locally packaged release files are published as GitHub release assets.
+release/
+
+# IDE and operating-system metadata
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini

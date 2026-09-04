@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net481</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>HDRCalibrate</RootNamespace>
+    <AssemblyName>HDRCalibrate</AssemblyName>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+    <LangVersion>7.3</LangVersion>
+    <Deterministic>true</Deterministic>
+    <DefaultItemExcludes>$(DefaultItemExcludes);artifacts\**</DefaultItemExcludes>
+    <Version>1.3.0</Version>
+    <AssemblyVersion>1.3.0.0</AssemblyVersion>
+    <FileVersion>1.3.0.0</FileVersion>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System.Runtime.Serialization" />
+    <ProjectReference Include="..\HDRCalibrate.Dwm\HDRCalibrate.Dwm.csproj" />
+    <ProjectReference Include="..\HDRCalibrate.DwmHelper\HDRCalibrate.DwmHelper.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="..\..\README.md" Link="README.md" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\THIRD-PARTY-NOTICES.md" Link="THIRD-PARTY-NOTICES.md" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="CopyDwmHelper" AfterTargets="Build">
+    <MSBuild Projects="..\HDRCalibrate.DwmHelper\HDRCalibrate.DwmHelper.csproj"
+             Targets="Build"
+             BuildInParallel="false"
+             Properties="Configuration=$(Configuration);Platform=$(Platform);TargetFramework=$(TargetFramework)">
+      <Output TaskParameter="TargetOutputs" ItemName="DwmHelperTargetPath" />
+    </MSBuild>
+    <ItemGroup>
+      <DwmHelperFiles Include="@(DwmHelperTargetPath)" />
+      <DwmHelperFiles Include="@(DwmHelperTargetPath->'%(FullPath).config')"
+                      Condition="Exists('%(DwmHelperTargetPath.FullPath).config')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(DwmHelperFiles)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="false" />
+  </Target>
+</Project>
