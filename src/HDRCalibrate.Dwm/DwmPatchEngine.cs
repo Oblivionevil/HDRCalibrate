@@ -40,7 +40,10 @@ namespace HDRCalibrate.Dwm
                 DwmShaderRewriter.ValidateSupportedSettings(settings);
                 diagnostics.Add("ABI-erhaltender Konstantenpatch: Originalshader bleiben vollständig erhalten; nur 16 freigegebene SHDR-Konstanten werden geändert.");
                 var diskImage = File.ReadAllBytes(compatibility.DwmCorePath);
-                DwmShaderRewriter.Rewrite(diskImage, settings, out var rewriteReport);
+                var modifiedImage = DwmShaderRewriter.Rewrite(diskImage, settings, out var rewriteReport);
+                var patchPlanFingerprint = rewriteReport.ModifiedRanges.Count == 0
+                    ? string.Empty
+                    : DwmPatchPlanFingerprint.Compute(modifiedImage, rewriteReport.ModifiedRanges);
                 diagnostics.Add(
                     rewriteReport.PatchedShaderCount + " Zielshader in " + rewriteReport.ParentLibraryCount +
                     " Bibliotheken; exakt " + rewriteReport.ChangedByteCount + " geänderte Bytes auf " +
@@ -57,6 +60,7 @@ namespace HDRCalibrate.Dwm
                     PatchedConstantVectorCount = rewriteReport.PatchedConstantVectorCount,
                     ChangedByteCount = rewriteReport.ChangedByteCount,
                     ModifiedPageCount = rewriteReport.ModifiedPageCount,
+                    PatchPlanFingerprint = patchPlanFingerprint,
                     Diagnostics = diagnostics
                 };
             }
@@ -86,9 +90,24 @@ namespace HDRCalibrate.Dwm
             return ApplyCore(settings, activationCallback);
         }
 
+        public DwmPatchResponse ApplySupervisedPersistent(
+            CalibrationSettings settings,
+            Action<DwmPatchResponse> activationCallback,
+            WindowsEnvironmentIdentity expectedWindowsEnvironment,
+            StartupApprovalFileProof startupApproval = null)
+        {
+            if (activationCallback == null) throw new ArgumentNullException(nameof(activationCallback));
+            WindowsEnvironmentGuard.RequireCurrent(expectedWindowsEnvironment);
+            startupApproval?.RequireUnchanged();
+            DwmPatchSafety.EnsureLivePatchEnabled();
+            return ApplyCore(settings, activationCallback, expectedWindowsEnvironment, startupApproval);
+        }
+
         private DwmPatchResponse ApplyCore(
             CalibrationSettings settings,
-            Action<DwmPatchResponse> activationCallback)
+            Action<DwmPatchResponse> activationCallback,
+            WindowsEnvironmentIdentity expectedWindowsEnvironment = null,
+            StartupApprovalFileProof startupApproval = null)
         {
             if (settings == null) throw new ArgumentNullException(nameof(settings));
             settings.Validate();
@@ -102,18 +121,32 @@ namespace HDRCalibrate.Dwm
             // Complete every fallible manifest/container/reflection check before DWM is restarted.
             DwmShaderRewriter.ValidateSupportedSettings(settings);
             var diskImage = File.ReadAllBytes(compatibility.DwmCorePath);
-            DwmShaderRewriter.Rewrite(diskImage, settings, out var preflightReport);
+            var preflightImage = DwmShaderRewriter.Rewrite(diskImage, settings, out var preflightReport);
+            var patchPlanFingerprint = DwmPatchPlanFingerprint.Compute(
+                preflightImage, preflightReport.ModifiedRanges);
             diagnostics.Add(
                 "Preflight: " + preflightReport.PatchedShaderCount + " SDR-Shader, " +
                 preflightReport.PatchedConstantVectorCount + " Konstantenvektoren, " +
                 preflightReport.ModifiedPageCount + " Seiten.");
 
+            if (expectedWindowsEnvironment != null)
+                WindowsEnvironmentGuard.RequireCurrent(expectedWindowsEnvironment);
+            startupApproval?.RequireUnchanged();
             EnableDebugPrivilege();
             DwmProcessModule module = null;
             try
             {
                 module = RestartDwm(diagnostics);
-                var runtimeReport = PatchRunningDwm(module, settings, preflightReport, diagnostics);
+                if (expectedWindowsEnvironment != null)
+                    WindowsEnvironmentGuard.RequireCurrent(expectedWindowsEnvironment);
+                var runtimeReport = PatchRunningDwm(
+                    module,
+                    settings,
+                    preflightReport,
+                    patchPlanFingerprint,
+                    diagnostics,
+                    expectedWindowsEnvironment,
+                    startupApproval);
                 var patchActivatedUtcTicks = DateTime.UtcNow.Ticks;
                 var activation = new DwmPatchResponse
                 {
@@ -127,6 +160,7 @@ namespace HDRCalibrate.Dwm
                     ChangedByteCount = runtimeReport.ChangedByteCount,
                     ModifiedPageCount = runtimeReport.ModifiedPageCount,
                     PatchActivatedUtcTicks = patchActivatedUtcTicks,
+                    PatchPlanFingerprint = patchPlanFingerprint,
                     Diagnostics = new List<string>(diagnostics)
                 };
                 activationCallback?.Invoke(activation);
@@ -146,6 +180,7 @@ namespace HDRCalibrate.Dwm
                     ChangedByteCount = runtimeReport.ChangedByteCount,
                     ModifiedPageCount = runtimeReport.ModifiedPageCount,
                     PatchActivatedUtcTicks = patchActivatedUtcTicks,
+                    PatchPlanFingerprint = patchPlanFingerprint,
                     Diagnostics = diagnostics
                 };
             }
@@ -188,7 +223,10 @@ namespace HDRCalibrate.Dwm
             DwmProcessModule module,
             CalibrationSettings settings,
             DwmRewriteReport preflightReport,
-            ICollection<string> diagnostics)
+            string expectedPatchPlanFingerprint,
+            ICollection<string> diagnostics,
+            WindowsEnvironmentIdentity expectedWindowsEnvironment,
+            StartupApprovalFileProof startupApproval)
         {
             var expectedPath = Path.GetFullPath(DwmCoreInspector.GetSystemDwmCorePath());
             var actualPath = Path.GetFullPath(module.ModulePath);
@@ -213,6 +251,8 @@ namespace HDRCalibrate.Dwm
 
                 var original = ReadModule(process, module, diagnostics);
                 var modified = DwmShaderRewriter.Rewrite(original, settings, out var report);
+                var runtimePatchPlanFingerprint = DwmPatchPlanFingerprint.Compute(
+                    modified, report.ModifiedRanges);
                 if (preflightReport == null
                     || report.PatchedShaderCount != preflightReport.PatchedShaderCount
                     || report.PatchedConstantVectorCount != preflightReport.PatchedConstantVectorCount
@@ -220,6 +260,17 @@ namespace HDRCalibrate.Dwm
                     || report.ChangedByteCount != preflightReport.ChangedByteCount)
                     throw new InvalidDataException(
                         "Der Laufzeit-Schreibplan weicht vom vollständig geprüften Datenträger-Schreibplan ab.");
+                if (string.IsNullOrWhiteSpace(expectedPatchPlanFingerprint)
+                    || !string.Equals(
+                        runtimePatchPlanFingerprint,
+                        expectedPatchPlanFingerprint,
+                        StringComparison.Ordinal))
+                    throw new InvalidDataException(
+                        "Der Laufzeit-Schreibplan besitzt nicht den freigegebenen Fingerabdruck.");
+                // Do not let a change during module reading/rewriting reach a single write.
+                if (expectedWindowsEnvironment != null)
+                    WindowsEnvironmentGuard.RequireCurrent(expectedWindowsEnvironment);
+                startupApproval?.RequireUnchanged();
                 WriteModifiedRanges(process, module.ModuleBase, modified, report.ModifiedRanges);
                 VerifyModifiedRanges(process, module, modified, report.ModifiedRanges);
                 diagnostics.Add(

@@ -6,6 +6,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
@@ -21,17 +22,32 @@ namespace HDRCalibrate.ViewModels
         private readonly ProfileService _profileService = new ProfileService();
         private readonly DwmPatchService _dwmPatchService = new DwmPatchService();
         private readonly DwmStateStore _dwmStateStore = new DwmStateStore();
+        private readonly AutostartService _autostartService;
+        private readonly IStartupActivationPolicyStore _startupActivationPolicyStore;
+        private readonly IWindowsEnvironmentIdentityProvider _windowsEnvironmentIdentityProvider;
+        private readonly SnapshotWindowsEnvironmentProvider _startupEnvironmentSnapshot = new SnapshotWindowsEnvironmentProvider();
         private DisplayInfo _selectedDisplay;
         private PersistedDwmState _dwmState;
+        private PersistedStartupActivationPolicy _startupActivationPolicy;
         private DwmPatchResponse _preflight;
+        private string _preflightSettingsFingerprint;
         private string _startupStateError;
+        private string _startupPolicyError;
+        private bool _startupApprovalInvalidated;
+        private bool _refreshingStartupActivationState;
+        private Task _initializationTask;
         private string _statusMessage = "Bereit";
         private string _dwmStatus = "DWM wird geprüft";
         private bool _isBusy;
         private bool _isError;
         private bool _isDwmPatchActive;
         private bool _hasLegacyRestorePoint;
+        private bool _isAutostartEnabled;
+        private string _autostartStatus = "Autostart wird geprüft";
+        private bool _isStartupActivationEnabled;
+        private string _startupActivationStatus = "Startaktivierung wird geprüft";
         private string _lastTestedSettingsKey;
+        private WindowsEnvironmentIdentity _lastTestedWindowsEnvironment;
         private double _gamma = 2.2;
         private bool _applySdrGammaCorrection = true;
         private double _brightnessPercent;
@@ -43,7 +59,25 @@ namespace HDRCalibrate.ViewModels
         private PointCollection _curvePoints;
 
         public MainViewModel()
+            : this(new AutostartService(), new StartupActivationPolicyStore())
         {
+        }
+
+        public MainViewModel(AutostartService autostartService)
+            : this(autostartService, new StartupActivationPolicyStore())
+        {
+        }
+
+        public MainViewModel(
+            AutostartService autostartService,
+            IStartupActivationPolicyStore startupActivationPolicyStore,
+            IWindowsEnvironmentIdentityProvider windowsEnvironmentIdentityProvider = null)
+        {
+            _autostartService = autostartService ?? throw new ArgumentNullException(nameof(autostartService));
+            _startupActivationPolicyStore = startupActivationPolicyStore
+                ?? throw new ArgumentNullException(nameof(startupActivationPolicyStore));
+            _windowsEnvironmentIdentityProvider = windowsEnvironmentIdentityProvider
+                ?? new WindowsEnvironmentIdentityProvider();
             RefreshCommand = new AsyncRelayCommand(RefreshAsync, () => !IsBusy);
             ApplyCommand = new AsyncRelayCommand(ApplyAsync, () => CanApply && !IsBusy);
             TestCommand = new AsyncRelayCommand(RunTimedTestAsync, () => CanTest && !IsBusy);
@@ -51,6 +85,10 @@ namespace HDRCalibrate.ViewModels
             NeutralCommand = new RelayCommand(SetNeutral, () => !IsBusy);
             SetGammaPresetCommand = new ParameterRelayCommand(SetGammaPreset, parameter => !IsBusy && parameter != null);
             OpenWindowsHdrCommand = new RelayCommand(OpenWindowsHdrSettings);
+            ToggleAutostartCommand = new RelayCommand(ToggleAutostart);
+            ToggleStartupActivationCommand = new RelayCommand(
+                ToggleStartupActivation,
+                () => CanToggleStartupActivation);
 
             try
             {
@@ -61,6 +99,16 @@ namespace HDRCalibrate.ViewModels
             {
                 _startupStateError = ex.Message;
             }
+            try
+            {
+                _startupActivationPolicy = _startupActivationPolicyStore.Load();
+            }
+            catch (Exception ex)
+            {
+                _startupPolicyError = ex.Message;
+            }
+            RefreshAutostartState();
+            RefreshStartupActivationState();
             RebuildCurve();
         }
 
@@ -186,6 +234,30 @@ namespace HDRCalibrate.ViewModels
             private set => Set(ref _isError, value);
         }
 
+        public bool IsAutostartEnabled
+        {
+            get => _isAutostartEnabled;
+            private set => Set(ref _isAutostartEnabled, value);
+        }
+
+        public string AutostartStatus
+        {
+            get => _autostartStatus;
+            private set => Set(ref _autostartStatus, value);
+        }
+
+        public bool IsStartupActivationEnabled
+        {
+            get => _isStartupActivationEnabled;
+            private set => Set(ref _isStartupActivationEnabled, value);
+        }
+
+        public string StartupActivationStatus
+        {
+            get => _startupActivationStatus;
+            private set => Set(ref _startupActivationStatus, value);
+        }
+
         public bool HasDisplay => SelectedDisplay != null;
         public bool IsHdrActive => SelectedDisplay?.HdrActive == true;
         public bool IsDwmCompatible => _preflight?.Success == true;
@@ -208,6 +280,18 @@ namespace HDRCalibrate.ViewModels
         public bool CanTest => CanUseDwm
             && _preflight?.TimedTestAvailable == true
             && !BuildSettings().IsNeutral();
+        public bool CanToggleStartupActivation => !IsBusy
+            && (IsStartupActivationEnabled
+            || (IsAutostartEnabled
+                && StartupActivationPolicy.CanEnable(
+                    _startupActivationPolicy,
+                    GetAppVersion(),
+                    GetHelperVersionOrEmpty(),
+                    _preflight,
+                    _preflightSettingsFingerprint,
+                    _dwmState,
+                    DwmPatchService.IsAppliedStateCurrent(_dwmState),
+                    _startupEnvironmentSnapshot)));
         public bool HasRestorePoint => _dwmState != null || _hasLegacyRestorePoint;
         public string DisplayStatus => SelectedDisplay == null
             ? "Kein Monitor ausgewählt"
@@ -226,10 +310,331 @@ namespace HDRCalibrate.ViewModels
         public ICommand NeutralCommand { get; }
         public ICommand SetGammaPresetCommand { get; }
         public ICommand OpenWindowsHdrCommand { get; }
+        public ICommand ToggleAutostartCommand { get; }
+        public ICommand ToggleStartupActivationCommand { get; }
+
+        public void RefreshAutostartState()
+        {
+            try
+            {
+                IsAutostartEnabled = _autostartService.IsEnabled();
+                AutostartStatus = !IsAutostartEnabled
+                    ? "Aus"
+                    : _autostartService.NeedsMigration()
+                        ? "Aktiv · alter Startbefehl (wird beim nächsten Aktivieren aktualisiert)"
+                        : "Aktiv · startet verborgen im Infobereich";
+            }
+            catch (Exception ex)
+            {
+                IsAutostartEnabled = false;
+                AutostartStatus = "Status nicht verfügbar: " + ex.Message;
+            }
+            RefreshStartupActivationState();
+        }
+
+        public void ToggleAutostart()
+        {
+            try
+            {
+                var enable = !IsAutostartEnabled;
+                _autostartService.SetEnabled(enable);
+                RefreshAutostartState();
+                IsError = false;
+                StatusMessage = enable
+                    ? "Autostart aktiviert: HDR Calibrate startet bei der Anmeldung verborgen im Infobereich."
+                    : "Autostart deaktiviert.";
+                RefreshStartupActivationState();
+            }
+            catch (Exception ex)
+            {
+                RefreshAutostartState();
+                SetError("Autostart konnte nicht geändert werden: " + ex.Message);
+            }
+        }
+
+        public void RefreshStartupActivationState()
+        {
+            if (_refreshingStartupActivationState) return;
+            _refreshingStartupActivationState = true;
+            try
+            {
+                _startupActivationPolicy = _startupActivationPolicyStore.Load();
+                _startupEnvironmentSnapshot.Identity = null;
+                if (_startupActivationPolicy != null)
+                {
+                    if (_startupActivationPolicy.ApprovalRevoked && !_startupActivationPolicy.Enabled)
+                    {
+                        InvalidateSessionTest();
+                        _startupApprovalInvalidated = true;
+                        _startupPolicyError = WindowsApprovalRevokedMessage;
+                    }
+                    else
+                    {
+                        try { _startupEnvironmentSnapshot.Identity = _windowsEnvironmentIdentityProvider.Capture(); }
+                        catch { /* An unavailable identity must invalidate, never approve, the saved test. */ }
+                        if (!StartupActivationPolicy.IsValidForCurrentBuild(
+                            _startupActivationPolicy, GetAppVersion(), GetHelperVersionOrEmpty(),
+                            _startupEnvironmentSnapshot))
+                            RevokeStartupApproval(WindowsApprovalRevokedMessage);
+                    }
+                }
+                IsStartupActivationEnabled = _startupActivationPolicy?.Enabled == true;
+                if (!string.IsNullOrWhiteSpace(_startupPolicyError))
+                {
+                    StartupActivationStatus = "Nicht verfügbar: " + _startupPolicyError;
+                }
+                else if (IsStartupActivationEnabled && !IsAutostartEnabled)
+                {
+                    StartupActivationStatus = "Pausiert · Windows-Autostart ist aus";
+                }
+                else if (IsStartupActivationEnabled)
+                {
+                    StartupActivationStatus = "Aktiv · geprüfte SDR-Werte · UAC beim Windows-Start";
+                }
+                else if (CanEnableStartupActivation())
+                {
+                    StartupActivationStatus = "Bereit · kann für die geprüften aktiven Werte eingeschaltet werden";
+                }
+                else
+                {
+                    StartupActivationStatus = "Aus · zuerst 5 Sekunden testen und anschließend anwenden";
+                }
+            }
+            catch (Exception ex)
+            {
+                _startupActivationPolicy = null;
+                RevokeStartupApproval("Der gespeicherte Testnachweis ist nicht lesbar. Erneute Freigabe erforderlich: " + ex.Message);
+                StartupActivationStatus = "Gesperrt: " + _startupPolicyError;
+            }
+            finally
+            {
+                _refreshingStartupActivationState = false;
+            }
+            OnPropertyChanged(nameof(CanToggleStartupActivation));
+            (ToggleStartupActivationCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        }
+
+        public void ToggleStartupActivation()
+        {
+            if (IsBusy) return;
+            RefreshStartupActivationState();
+            var enable = !IsStartupActivationEnabled;
+            if (enable)
+            {
+                if (!CanEnableStartupActivation())
+                {
+                    SetError(
+                        "Startaktivierung ist erst verfügbar, nachdem exakt diese Werte fünf Sekunden getestet und anschließend angewendet wurden.");
+                    return;
+                }
+                var confirmation = MessageBox.Show(
+                    "Beim nächsten Windows-Start wird die exakt getestete SDR-Korrektur automatisch angefordert. " +
+                    "DWM wird dabei einmal sicher neu gestartet; der Bildschirm kann kurz schwarz werden und Windows zeigt eine UAC-Abfrage. " +
+                    "Ein unabhängiger Watchdog setzt DWM ohne bestätigten Zustands-Commit ungepatcht zurück. Aktivieren?",
+                    "SDR-Korrektur beim Windows-Start aktivieren",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning,
+                    MessageBoxResult.No);
+                if (confirmation != MessageBoxResult.Yes) return;
+            }
+
+            try
+            {
+                if (_startupActivationPolicy == null)
+                    throw new InvalidOperationException("Es liegt kein erfolgreicher überwachter Testnachweis vor.");
+                var previous = _startupActivationPolicy.Enabled;
+                var disableRecovered = false;
+                _startupActivationPolicy.Enabled = enable;
+                try
+                {
+                    if (enable) _autostartService.SetEnabled(true);
+                    _startupActivationPolicyStore.Save(_startupActivationPolicy);
+                    _startupPolicyError = null;
+                }
+                catch (Exception saveError)
+                {
+                    _startupActivationPolicy.Enabled = previous;
+                    if (enable) throw;
+
+                    DisableStartupActivationFailClosed();
+                    if (IsStartupActivationEnabled)
+                        throw new InvalidOperationException(
+                            _startupPolicyError ?? "Startaktivierung konnte nicht sicher deaktiviert werden.",
+                            saveError);
+                    disableRecovered = true;
+                }
+                RefreshAutostartState();
+                RefreshStartupActivationState();
+                IsError = false;
+                StatusMessage = enable
+                    ? "Startaktivierung eingeschaltet: Nur die exakt geprüften SDR-Werte werden beim Windows-Start nach UAC-Freigabe angewendet."
+                    : disableRecovered
+                        ? "Startaktivierung ausgeschaltet; der nicht aktualisierbare Testnachweis wurde sicher entfernt."
+                        : "Startaktivierung ausgeschaltet; die aktuell laufende DWM-Korrektur bleibt unverändert.";
+            }
+            catch (Exception ex)
+            {
+                _startupPolicyError = ex.Message;
+                RefreshStartupActivationState();
+                SetError("Startaktivierung konnte nicht geändert werden: " + ex.Message);
+            }
+        }
+
+        public void ReportExitDeferred()
+        {
+            IsError = false;
+            StatusMessage = "Beenden wurde angefordert. Der laufende DWM-Vorgang wird zuerst sicher abgeschlossen.";
+        }
+
+        public async Task<StartupActivationResult> TryActivateAtWindowsStartupAsync(bool isStartupLaunch)
+        {
+            await InitializeAsync();
+            IsBusy = true;
+            try
+            {
+                RefreshStartupActivationState();
+                if (isStartupLaunch && _startupApprovalInvalidated)
+                {
+                    SetError(_startupPolicyError ?? WindowsApprovalRevokedMessage);
+                    return new StartupActivationResult(StartupActivationDecision.ApprovalInvalid, false, false, StatusMessage);
+                }
+
+                CalibrationSettings approvedSettings = null;
+                if (isStartupLaunch && _startupActivationPolicy?.Enabled == true)
+                {
+                    try
+                    {
+                        StartupActivationPolicy.ValidateStoredPolicy(_startupActivationPolicy, true);
+                        approvedSettings = _startupActivationPolicy.Settings.Clone();
+                        var approvedFingerprint = GetSettingsKey(approvedSettings);
+                        try
+                        {
+                            _preflight = await Task.Run(() => _dwmPatchService.Preflight(approvedSettings));
+                        }
+                        catch
+                        {
+                            _preflight = null;
+                        }
+                        _preflightSettingsFingerprint = approvedFingerprint;
+                    }
+                    catch
+                    {
+                        approvedSettings = null;
+                        _preflight = null;
+                        _preflightSettingsFingerprint = null;
+                    }
+                }
+
+                var decision = StartupActivationPolicy.Evaluate(
+                    _startupActivationPolicy,
+                    isStartupLaunch,
+                    GetAppVersion(),
+                    GetHelperVersionOrEmpty(),
+                    _preflight,
+                    _preflightSettingsFingerprint,
+                    Displays.Any(item => item.HdrActive),
+                    SelectedDisplay?.AdvancedColorLimitedByPolicy ?? true,
+                    _dwmState,
+                    DwmPatchService.IsAppliedStateCurrent(_dwmState),
+                    _windowsEnvironmentIdentityProvider);
+
+                if (decision == StartupActivationDecision.Disabled
+                    || decision == StartupActivationDecision.NotStartupLaunch)
+                    return new StartupActivationResult(decision, false, true, string.Empty);
+                if (decision == StartupActivationDecision.AlreadyActive)
+                {
+                    StatusMessage = "Die geprüfte SDR-Korrektur ist im aktuellen DWM bereits aktiv; kein Neustart und keine UAC-Abfrage erforderlich.";
+                    return new StartupActivationResult(decision, false, true, StatusMessage);
+                }
+                if (decision != StartupActivationDecision.Ready)
+                {
+                    var message = GetStartupDecisionMessage(decision);
+                    if (decision == StartupActivationDecision.ApprovalInvalid)
+                    {
+                        RevokeStartupApproval(WindowsApprovalRevokedMessage);
+                        if (IsStartupActivationEnabled && IsAutostartEnabled)
+                            message += " Die automatische Wiederholung konnte nicht deaktiviert werden: " +
+                                (_startupPolicyError ?? "unbekannter Speicherfehler");
+                    }
+                    SetError(message);
+                    return new StartupActivationResult(decision, false, false, message);
+                }
+
+                approvedSettings = approvedSettings ?? _startupActivationPolicy.Settings.Clone();
+                var approvedPolicy = _startupActivationPolicy;
+                var approvedWindowsEnvironment = approvedPolicy.WindowsEnvironment.Clone();
+                LoadSettings(approvedSettings);
+                RaiseCalibrationSettingProperties();
+                RebuildCurve();
+                IsError = false;
+                StatusMessage = "Geprüfte SDR-Startkorrektur wird überwacht aktiviert; Administratorfreigabe wird benötigt …";
+                try
+                {
+                    var startupApproval = CaptureStartupApprovalFile(approvedPolicy);
+                    var restoredProfiles = await Task.Run(RestoreLegacyProfiles);
+                    PersistedDwmState committedState = null;
+                    var response = await Task.Run(() => _dwmPatchService.ApplySupervised(
+                        approvedSettings,
+                        activation =>
+                        {
+                            if (_startupApprovalInvalidated)
+                                throw new InvalidDataException("Die Startfreigabe wurde während der Aktivierung widerrufen.");
+                            committedState = CreateAppliedState(activation, approvedSettings);
+                            _dwmStateStore.Save(committedState);
+                        },
+                        approvedWindowsEnvironment,
+                        startupApproval));
+                    _dwmState = committedState
+                        ?? throw new InvalidDataException("Der überwachte Start-Commit enthält keinen DWM-Zustand.");
+                    await RefreshAsync();
+                    StatusMessage = response.PatchedConstantVectorCount +
+                        " geprüfte SDR-Konstanten beim Windows-Start in PID " + response.DwmProcessId +
+                        " aktiviert; Watchdog-Commit bestätigt" + FormatLegacyRestore(restoredProfiles) + ".";
+                    RefreshStartupActivationState();
+                    return new StartupActivationResult(
+                        StartupActivationDecision.Ready,
+                        true,
+                        true,
+                        StatusMessage);
+                }
+                catch (Exception ex)
+                {
+                    RevokeStartupApproval("Die Startaktivierung wurde nicht sicher bestätigt. Neuer Test und erneute Freigabe erforderlich.");
+                    try
+                    {
+                        _dwmState = _dwmStateStore.Load();
+                        UpdateDwmStatus();
+                    }
+                    catch
+                    {
+                        _dwmState = null;
+                    }
+                    var startupRetryBlocked = !IsStartupActivationEnabled || !IsAutostartEnabled;
+                    var message = startupRetryBlocked
+                        ? "Startaktivierung fehlgeschlagen und für weitere Starts deaktiviert: " + FlattenException(ex)
+                        : "Startaktivierung fehlgeschlagen; die automatische Wiederholung konnte nicht deaktiviert werden: " +
+                            FlattenException(ex) + " | " +
+                            (_startupPolicyError ?? "unbekannter Speicherfehler");
+                    SetError(message);
+                    return new StartupActivationResult(
+                        StartupActivationDecision.Ready,
+                        true,
+                        false,
+                        message);
+                }
+            }
+            finally
+            {
+                IsBusy = false;
+                RaiseDisplayProperties();
+                RefreshStartupActivationState();
+            }
+        }
 
         public async Task InitializeAsync()
         {
-            await RefreshAsync();
+            if (_initializationTask == null) _initializationTask = RefreshAsync();
+            await _initializationTask;
         }
 
         private async Task RefreshAsync()
@@ -247,6 +652,7 @@ namespace HDRCalibrate.ViewModels
 
                 var detected = displaysTask.Result;
                 _preflight = preflightTask.Result;
+                _preflightSettingsFingerprint = GetSettingsKey(settings);
                 Displays.Clear();
                 foreach (var display in detected) Displays.Add(display);
                 SelectedDisplay = Displays.FirstOrDefault(item => item.Key == previousKey)
@@ -256,6 +662,7 @@ namespace HDRCalibrate.ViewModels
                 _dwmState = _dwmStateStore.Load();
                 _hasLegacyRestorePoint = detected.Any(display => _profileService.GetState(display) != null);
                 UpdateDwmStatus();
+                RefreshStartupActivationState();
 
                 if (!string.IsNullOrWhiteSpace(_startupStateError))
                 {
@@ -318,59 +725,49 @@ namespace HDRCalibrate.ViewModels
                     ? "DWM wird ungepatcht neu gestartet …"
                     : "Originalshader und 16 Konstanten werden geprüft; Administratorfreigabe wird benötigt …";
 
+                PersistedDwmState committedState = null;
                 var response = settings.IsNeutral()
                     ? await Task.Run(() => _dwmPatchService.Reset())
-                    : await Task.Run(() => _dwmPatchService.Apply(settings));
+                    : await Task.Run(() => _dwmPatchService.ApplySupervised(
+                        settings,
+                        activation =>
+                        {
+                            committedState = CreateAppliedState(activation, settings);
+                            _dwmStateStore.Save(committedState);
+                        },
+                        _lastTestedWindowsEnvironment));
 
                 if (settings.IsNeutral())
                 {
                     _dwmStateStore.Clear();
                     _dwmState = null;
+                    ClearStartupActivationPolicy();
                 }
                 else
                 {
-                    var newState = new PersistedDwmState
-                    {
-                        WasApplied = true,
-                        DwmProcessId = response.DwmProcessId,
-                        DwmStartTimeUtcTicks = response.DwmStartTimeUtcTicks,
-                        SessionId = Process.GetCurrentProcess().SessionId,
-                        DwmCoreVersion = response.DwmCoreVersion,
-                        AppliedUtc = DateTime.UtcNow,
-                        Settings = settings.Clone()
-                    };
-                    try
-                    {
-                        _dwmStateStore.Save(newState);
-                        _dwmState = newState;
-                    }
-                    catch (Exception stateError)
-                    {
-                        try
-                        {
-                            await Task.Run(() => _dwmPatchService.ResetForRecovery());
-                        }
-                        catch (Exception rollbackError)
-                        {
-                            throw new AggregateException(
-                                "Der DWM-Patch war aktiv, der Zustandsmerker konnte aber nicht gespeichert werden und auch der Sicherheits-Neustart schlug fehl.",
-                                stateError,
-                                rollbackError);
-                        }
-                        throw new InvalidOperationException(
-                            "Der Zustandsmerker konnte nicht gespeichert werden. DWM wurde deshalb sofort wieder ungepatcht gestartet.",
-                            stateError);
-                    }
+                    _dwmState = committedState
+                        ?? throw new InvalidDataException("Der überwachte Apply-Commit enthält keinen DWM-Zustand.");
                 }
 
                 await RefreshAsync();
                 StatusMessage = settings.IsNeutral()
                     ? "DWM-SDR-Korrektur entfernt" + FormatLegacyRestore(restoredProfiles) + "."
                     : response.PatchedConstantVectorCount + " SDR-Konstanten in PID " + response.DwmProcessId +
-                      " aktiv; Originalshader und native HDR-Pfade unverändert" + FormatLegacyRestore(restoredProfiles) + ".";
+                      " aktiv; Watchdog-Commit bestätigt, Originalshader und native HDR-Pfade unverändert" +
+                      FormatLegacyRestore(restoredProfiles) + ".";
             }
             catch (Exception ex)
             {
+                try
+                {
+                    _dwmState = _dwmStateStore.Load();
+                    UpdateDwmStatus();
+                }
+                catch
+                {
+                    _dwmState = null;
+                }
+                RevokeStartupApproval("Anwenden wurde nicht sicher bestätigt. Neuer Test und erneute Freigabe erforderlich.");
                 SetError("Anwenden fehlgeschlagen: " + FlattenException(ex));
             }
             finally
@@ -399,6 +796,7 @@ namespace HDRCalibrate.ViewModels
                 var response = await Task.Run(() => _dwmPatchService.ResetForRecovery());
                 _dwmStateStore.Clear();
                 _dwmState = null;
+                ClearStartupActivationPolicy();
                 StatusMessage = "DWM läuft ungepatcht; alte Profilreste werden bereinigt …";
                 var restoredProfiles = await Task.Run(RestoreLegacyProfiles);
                 SetNeutralValues();
@@ -445,28 +843,57 @@ namespace HDRCalibrate.ViewModels
 
             IsBusy = true;
             IsError = false;
-            _lastTestedSettingsKey = null;
+            InvalidateSessionTest();
+            RevokeStartupApproval("Ein neuer Test ersetzt den bisherigen Nachweis. Bis zum erfolgreichen Abschluss bleibt die Startaktivierung widerrufen.");
             OnPropertyChanged(nameof(IsCurrentSettingsTested));
             StatusMessage = "Alte HDR-Calibrate-Profile werden zurückgenommen …";
             try
             {
+                var testedWindowsEnvironment = await Task.Run(() => _windowsEnvironmentIdentityProvider.Capture());
                 var restoredProfiles = await Task.Run(RestoreLegacyProfiles);
                 StatusMessage = "5-Sekunden-Test läuft; unabhängiger Watchdog ist vor dem Patch bereits aktiv …";
                 var response = await Task.Run(() => _dwmPatchService.RunTimedTest(settings));
+                if (!testedWindowsEnvironment.Matches(await Task.Run(() => _windowsEnvironmentIdentityProvider.Capture())))
+                    throw new InvalidDataException("Windows oder DWM wurde während des Tests geändert. Der Test wird nicht freigegeben.");
+
+                string startupPolicyWarning = null;
+                try
+                {
+                    _startupActivationPolicy = StartupActivationPolicy.CreateFromSuccessfulTest(
+                        settings,
+                        response,
+                        GetAppVersion(),
+                        GetHelperVersionOrEmpty(),
+                        false,
+                        testedWindowsEnvironment,
+                        _windowsEnvironmentIdentityProvider);
+                    _startupActivationPolicyStore.Save(_startupActivationPolicy);
+                    _startupPolicyError = null;
+                    _startupApprovalInvalidated = false;
+                }
+                catch (Exception policyError)
+                {
+                    _startupActivationPolicy = null;
+                    _startupPolicyError = policyError.Message;
+                    startupPolicyWarning = " Startaktivierung bleibt gesperrt: " + policyError.Message;
+                }
 
                 _dwmStateStore.Clear();
                 _dwmState = null;
                 _lastTestedSettingsKey = GetSettingsKey(settings);
+                _lastTestedWindowsEnvironment = testedWindowsEnvironment.Clone();
                 OnPropertyChanged(nameof(IsCurrentSettingsTested));
                 await RefreshAsync();
                 StatusMessage = response.PatchedConstantVectorCount + " SDR-Konstanten wurden " +
                     (response.TestDurationMilliseconds / 1000.0).ToString("0.0", CultureInfo.CurrentCulture) +
                     " Sekunden getestet; Watchdog-Reset und ungepatchter DWM PID " + response.DwmProcessId +
                     " sind bestätigt. „Anwenden“ ist für genau diese Werte freigeschaltet" +
-                    FormatLegacyRestore(restoredProfiles) + ".";
+                    FormatLegacyRestore(restoredProfiles) + "." + startupPolicyWarning;
+                RefreshStartupActivationState();
             }
             catch (Exception ex)
             {
+                RevokeStartupApproval("Der Test wurde nicht sicher bestätigt. Neuer Test und erneute Freigabe erforderlich.");
                 SetError("5-Sekunden-Test fehlgeschlagen: " + FlattenException(ex));
             }
             finally
@@ -602,12 +1029,254 @@ namespace HDRCalibrate.ViewModels
 
         private static string GetSettingsKey(CalibrationSettings settings)
         {
-            return string.Join("|", new[]
+            return CalibrationSettingsIdentity.Compute(settings);
+        }
+
+        private bool CanEnableStartupActivation()
+        {
+            return IsAutostartEnabled
+                && StartupActivationPolicy.CanEnable(
+                    _startupActivationPolicy,
+                    GetAppVersion(),
+                    GetHelperVersionOrEmpty(),
+                    _preflight,
+                    _preflightSettingsFingerprint,
+                    _dwmState,
+                    DwmPatchService.IsAppliedStateCurrent(_dwmState),
+                    _startupEnvironmentSnapshot);
+        }
+
+        private static PersistedDwmState CreateAppliedState(
+            DwmPatchResponse response,
+            CalibrationSettings settings)
+        {
+            if (response == null) throw new ArgumentNullException(nameof(response));
+            if (!response.Success
+                || response.DwmProcessId <= 0
+                || response.DwmStartTimeUtcTicks <= 0
+                || string.IsNullOrWhiteSpace(response.PatchPlanFingerprint))
+                throw new InvalidDataException("Der aktive DWM-Zustand ist unvollständig.");
+            return new PersistedDwmState
             {
-                settings.ApplySdrGammaCorrection ? "1" : "0",
-                settings.Gamma.ToString("R", CultureInfo.InvariantCulture),
-                settings.Brightness.ToString("R", CultureInfo.InvariantCulture)
-            });
+                WasApplied = true,
+                DwmProcessId = response.DwmProcessId,
+                DwmStartTimeUtcTicks = response.DwmStartTimeUtcTicks,
+                SessionId = Process.GetCurrentProcess().SessionId,
+                DwmCoreVersion = response.DwmCoreVersion,
+                AppliedUtc = DateTime.UtcNow,
+                PatchPlanFingerprint = response.PatchPlanFingerprint,
+                Settings = settings.Clone()
+            };
+        }
+
+        private StartupApprovalFileProof CaptureStartupApprovalFile(PersistedStartupActivationPolicy expected)
+        {
+            var store = _startupActivationPolicyStore as StartupActivationPolicyStore;
+            if (store == null) throw new InvalidDataException("Die Startfreigabe ist nicht als überprüfbare Datei gespeichert.");
+            using (var lease = new FileStream(store.PolicyPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                var current = store.Load();
+                StartupActivationPolicy.ValidateStoredPolicy(current, true);
+                if (_startupApprovalInvalidated
+                    || !StartupActivationPolicy.IsValidForCurrentBuild(
+                        current, GetAppVersion(), GetHelperVersionOrEmpty(), _windowsEnvironmentIdentityProvider)
+                    || !current.WindowsEnvironment.Matches(expected.WindowsEnvironment)
+                    || current.TestedUtc != expected.TestedUtc
+                    || !string.Equals(current.SettingsFingerprint, expected.SettingsFingerprint, StringComparison.Ordinal)
+                    || !string.Equals(current.PatchPlanFingerprint, expected.PatchPlanFingerprint, StringComparison.Ordinal))
+                    throw new InvalidDataException("Die ursprüngliche Startfreigabe ist nicht mehr gültig.");
+                // Holding the read lease prevents replacement between validation and hashing.
+                return StartupApprovalFileProof.Capture(store.PolicyPath);
+            }
+        }
+
+        private const string WindowsApprovalRevokedMessage =
+            "Freigabe widerrufen: Windows-Build, Update-Revision, DWM-Dateien oder Programmstand wurden geändert " +
+            "oder konnten nicht sicher geprüft werden. Erneut 5 Sekunden testen, anwenden und die Startaktivierung ausdrücklich einschalten.";
+
+        private sealed class SnapshotWindowsEnvironmentProvider : IWindowsEnvironmentIdentityProvider
+        {
+            public WindowsEnvironmentIdentity Identity { get; set; }
+            public WindowsEnvironmentIdentity Capture()
+            {
+                if (Identity == null) throw new InvalidDataException("Die aktuelle Windows-Identität ist nicht bestätigt.");
+                return Identity.Clone();
+            }
+        }
+
+        private void InvalidateSessionTest()
+        {
+            _lastTestedSettingsKey = null;
+            _lastTestedWindowsEnvironment = null;
+            OnPropertyChanged(nameof(IsCurrentSettingsTested));
+            OnPropertyChanged(nameof(CanApply));
+            (ApplyCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+        }
+
+        private void RevokeStartupApproval(string reason)
+        {
+            InvalidateSessionTest();
+            _startupApprovalInvalidated = true;
+            _startupPolicyError = reason;
+            var policy = _startupActivationPolicy;
+            var wasEnabled = policy?.Enabled == true;
+            var wasRevoked = policy?.ApprovalRevoked == true;
+            if (policy != null)
+            {
+                try
+                {
+                    // A durable revocation cannot become valid again after an OS rollback.
+                    policy.Enabled = false;
+                    policy.ApprovalRevoked = true;
+                    _startupActivationPolicyStore.Save(policy);
+                    IsStartupActivationEnabled = false;
+                    return;
+                }
+                catch (Exception saveError)
+                {
+                    policy.Enabled = wasEnabled;
+                    policy.ApprovalRevoked = wasRevoked;
+                    _startupPolicyError += " | Widerruf konnte nicht gespeichert werden: " + saveError.Message;
+                }
+            }
+            try
+            {
+                // Includes legacy records that cannot be saved with the current schema.
+                _startupActivationPolicyStore.Clear();
+                _startupActivationPolicy = null;
+                IsStartupActivationEnabled = false;
+                return;
+            }
+            catch (Exception clearError)
+            {
+                _startupPolicyError += " | Alter Nachweis konnte nicht entfernt werden: " + clearError.Message;
+            }
+
+            IsStartupActivationEnabled = wasEnabled;
+            try
+            {
+                _autostartService.SetEnabled(false);
+                IsAutostartEnabled = _autostartService.IsEnabled();
+                AutostartStatus = "Aus · Windows-Update-Sicherheitssperre";
+            }
+            catch (Exception autostartError)
+            {
+                _startupPolicyError += " | Auch Windows-Autostart konnte nicht deaktiviert werden: " + autostartError.Message;
+            }
+        }
+
+        private void DisableStartupActivationFailClosed()
+        {
+            if (_startupActivationPolicy == null || !_startupActivationPolicy.Enabled) return;
+            var policy = _startupActivationPolicy;
+            try
+            {
+                policy.Enabled = false;
+                _startupActivationPolicyStore.Save(policy);
+                _startupPolicyError = null;
+                IsStartupActivationEnabled = false;
+                return;
+            }
+            catch (Exception saveError)
+            {
+                policy.Enabled = true;
+                try
+                {
+                    _startupActivationPolicyStore.Clear();
+                    _startupActivationPolicy = null;
+                    _startupPolicyError = null;
+                    IsStartupActivationEnabled = false;
+                    return;
+                }
+                catch (Exception clearError)
+                {
+                    _startupPolicyError =
+                        "Startaktivierung konnte weder deaktiviert noch entfernt werden; Windows-Autostart wird als Rückfallebene ausgeschaltet. " +
+                        saveError.Message + " | " + clearError.Message;
+                }
+            }
+
+            IsStartupActivationEnabled = true;
+            try
+            {
+                _autostartService.SetEnabled(false);
+                RefreshAutostartState();
+            }
+            catch (Exception autostartError)
+            {
+                _startupPolicyError += " | Auch Windows-Autostart konnte nicht ausgeschaltet werden: " +
+                    autostartError.Message;
+            }
+        }
+
+        private void ClearStartupActivationPolicy()
+        {
+            try
+            {
+                _startupActivationPolicyStore.Clear();
+                _startupActivationPolicy = null;
+                _startupPolicyError = null;
+                IsStartupActivationEnabled = false;
+                RefreshStartupActivationState();
+            }
+            catch (Exception clearError)
+            {
+                DisableStartupActivationFailClosed();
+                if (IsStartupActivationEnabled && IsAutostartEnabled)
+                    throw new InvalidOperationException(
+                        "Der Testnachweis konnte nach dem DWM-Reset nicht entfernt und seine automatische Wiederholung nicht deaktiviert werden.",
+                        clearError);
+            }
+        }
+
+        private static string GetStartupDecisionMessage(StartupActivationDecision decision)
+        {
+            switch (decision)
+            {
+                case StartupActivationDecision.ApprovalInvalid:
+                    return WindowsApprovalRevokedMessage;
+                case StartupActivationDecision.HdrUnavailable:
+                    return "Startaktivierung ausgelassen: Windows meldet derzeit keinen aktiven HDR-Monitor.";
+                case StartupActivationDecision.DisplayRestricted:
+                    return "Startaktivierung ausgelassen: Advanced Color ist für den ausgewählten Monitor durch Windows-Richtlinien eingeschränkt.";
+                case StartupActivationDecision.DwmIncompatible:
+                    return "Startaktivierung gesperrt: Die installierte DWM-Version oder das geprüfte Shadermanifest ist nicht kompatibel.";
+                case StartupActivationDecision.LivePatchBlocked:
+                    return "Startaktivierung gesperrt: Der sichere dauerhafte DWM-Pfad ist in diesem Build deaktiviert.";
+                default:
+                    return "Startaktivierung wurde aus Sicherheitsgründen nicht ausgeführt.";
+            }
+        }
+
+        private static string GetAppVersion()
+        {
+            return typeof(MainViewModel).Assembly.GetName().Version.ToString();
+        }
+
+        private static string GetHelperVersionOrEmpty()
+        {
+            try
+            {
+                var path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "HDRCalibrate.DwmHelper.exe");
+                if (!File.Exists(path)) return string.Empty;
+                return (FileVersionInfo.GetVersionInfo(path).FileVersion ?? string.Empty).Trim();
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private void RaiseCalibrationSettingProperties()
+        {
+            OnPropertyChanged(nameof(Gamma));
+            OnPropertyChanged(nameof(ApplySdrGammaCorrection));
+            OnPropertyChanged(nameof(BrightnessPercent));
+            OnPropertyChanged(nameof(Contrast));
+            OnPropertyChanged(nameof(SaturationPercent));
+            OnPropertyChanged(nameof(RedGainPercent));
+            OnPropertyChanged(nameof(GreenGainPercent));
+            OnPropertyChanged(nameof(BlueGainPercent));
         }
 
         private void RaiseDisplayProperties()
@@ -619,6 +1288,7 @@ namespace HDRCalibrate.ViewModels
             OnPropertyChanged(nameof(IsDwmPatchActive));
             OnPropertyChanged(nameof(CanApply));
             OnPropertyChanged(nameof(CanTest));
+            OnPropertyChanged(nameof(CanToggleStartupActivation));
             OnPropertyChanged(nameof(HasRestorePoint));
             OnPropertyChanged(nameof(DisplayStatus));
             OnPropertyChanged(nameof(ActiveProfile));
@@ -636,6 +1306,7 @@ namespace HDRCalibrate.ViewModels
             (ResetProfileCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
             (NeutralCommand as RelayCommand)?.RaiseCanExecuteChanged();
             (SetGammaPresetCommand as ParameterRelayCommand)?.RaiseCanExecuteChanged();
+            (ToggleStartupActivationCommand as RelayCommand)?.RaiseCanExecuteChanged();
         }
 
         private static string FormatLegacyRestore(int count)

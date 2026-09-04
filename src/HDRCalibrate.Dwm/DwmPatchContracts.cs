@@ -14,7 +14,10 @@ namespace HDRCalibrate.Dwm
         SafetyReset = 4,
         TimedTest = 5,
         TimedTestWorker = 6,
-        TimedTestWatchdog = 7
+        TimedTestWatchdog = 7,
+        SupervisedApply = 8,
+        SupervisedApplyWorker = 9,
+        SupervisedApplyWatchdog = 10
     }
 
     [Serializable]
@@ -29,6 +32,10 @@ namespace HDRCalibrate.Dwm
         public string WorkerResponsePath { get; set; }
         public string ActivationPath { get; set; }
         public string RecoveryResponsePath { get; set; }
+        public string CommitPath { get; set; }
+        public string CommitAcceptedPath { get; set; }
+        public WindowsEnvironmentIdentity ExpectedWindowsEnvironment { get; set; }
+        public StartupApprovalFileProof StartupApproval { get; set; }
     }
 
     [Serializable]
@@ -48,8 +55,12 @@ namespace HDRCalibrate.Dwm
         public long PatchActivatedUtcTicks { get; set; }
         public long WatchdogResetUtcTicks { get; set; }
         public bool WatchdogArmed { get; set; }
+        public bool CommitAccepted { get; set; }
+        public bool RecoveryPerformed { get; set; }
         public int TestedDwmProcessId { get; set; }
         public int TestDurationMilliseconds { get; set; }
+        public string CorrelationToken { get; set; }
+        public string PatchPlanFingerprint { get; set; }
         public List<string> Diagnostics { get; set; } = new List<string>();
     }
 

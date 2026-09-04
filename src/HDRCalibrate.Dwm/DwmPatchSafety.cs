@@ -4,6 +4,8 @@ namespace HDRCalibrate.Dwm
 {
     public static class DwmPatchSafety
     {
+        public const string PatchImplementationId = "dwm-sdr-constant-supervised-v2";
+
         public const string BlockReason =
             "Dauerhaftes Anwenden ist in diesem Build deaktiviert.";
 

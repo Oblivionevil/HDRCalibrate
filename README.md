@@ -1,4 +1,4 @@
-# HDR Calibrate 1.3.0
+# HDR Calibrate 1.5.1
 
 Portables WPF-Tool für Windows 11 und .NET Framework 4.8.1. Es passt bei
 aktiviertem Windows-HDR ausschließlich die von DWM zusammengesetzten
@@ -33,9 +33,66 @@ Korrektur.
    Originalshadern neu.
 
 Der Bildschirm kann beim Start und Ende eines Tests beziehungsweise beim
-Anwenden kurz schwarz werden. Nach einem DWM- oder Windows-Neustart muss die
-Korrektur erneut getestet und angewendet werden. Die App richtet keinen
-Autostart ein und verwendet keine herstellerspezifische Software.
+Anwenden kurz schwarz werden. Ein DWM-Neustart entfernt die laufende
+Korrektur. Manuell muss sie danach erneut getestet und angewendet werden; die
+separat freigegebene Startaktivierung darf ausschließlich die zuvor exakt
+geprüften Werte erneut anwenden. Nach einer App-, Helfer- oder kompatibilitäts-
+relevanten Windows-Aktualisierung ist eine neue Prüfung erforderlich. Die App
+richtet keinen ungefragten Autostart ein und verwendet keine
+herstellerspezifische Software.
+
+## Installer, Tray und Autostart
+
+- Der per-user Installer benötigt für die Hauptanwendung keine
+  Administratorrechte und installiert standardmäßig nach
+  `%LOCALAPPDATA%\Programs\HDR Calibrate`.
+- Desktop-Verknüpfung und **Mit Windows starten (im Tray)** sind im Installer
+  optionale, standardmäßig abgewählte Aufgaben.
+- Autostart lässt sich jederzeit oben rechts in der App oder über das
+  Tray-Menü umschalten. Der eigene HKCU-Run-Eintrag enthält den vollständig
+  gequoteten Programmpfad und `--tray --startup`. Ein alter eigener
+  `--tray`-Eintrag wird erkannt und beim erneuten Aktivieren sicher migriert.
+- `--tray` startet genau eine Instanz ohne sichtbares Hauptfenster. Ein normaler
+  zweiter Start öffnet die bereits laufende Instanz.
+- Das Fenster-X verbirgt die App im Infobereich. **Beenden** im Tray beendet
+  sie vollständig; während eines sicherheitskritischen DWM-Vorgangs wird das
+  Beenden bis zu dessen Abschluss aufgeschoben.
+
+Die separate Option **SDR-Korrektur beim Windows-Start aktivieren (UAC)** ist
+standardmäßig aus. Sie lässt sich erst einschalten, nachdem exakt dieselben
+Werte erfolgreich fünf Sekunden getestet und anschließend manuell angewendet
+wurden. Die Freigabe ist an Reglerwerte, App- und Helferversion, die exakte
+`dwmcore.dll` sowie den geprüften Byte-Schreibplan gebunden. Ohne diese Freigabe
+bleibt `--startup` ein read-only No-op und startet keinen erhöhten Helfer.
+
+### Windows-Updates heben die Startfreigabe auf
+
+Zusätzlich gehören der Windows-Build, die Update-Revision (UBR), BuildLabEx
+und die tatsächlichen SHA-256-Dateihashes von `dwm.exe` und `dwmcore.dll` zum
+Testnachweis. Ändert sich auch nur einer dieser Werte oder lässt sich die
+Identität nicht vollständig lesen, wird nicht automatisch angewendet. Die
+Freigabe wird dauerhaft widerrufen; auch ein späteres Windows-Rollback
+aktiviert sie nicht wieder. Alte Testnachweise ohne diese Identität werden
+nicht übernommen. Der gesperrte Zustand wird in der Oberfläche angezeigt.
+
+Erst ein neuer erfolgreicher Fünf-Sekunden-Test, anschließendes manuelles
+Anwenden und erneutes ausdrückliches Einschalten der Startaktivierung erzeugen
+eine neue Freigabe. Die Identität wird auch nach der UAC-Abfrage im erhöhten
+Helfer, vor dem Patch und vor dem Zustands-Commit erneut geprüft.
+Zusätzlich wird die genaue freigegebene Richtliniendatei per SHA-256 bis zum
+Schreibvorgang überwacht: Widerruf, Ersetzung oder Löschung während einer
+offenen UAC-Abfrage brechen die Aktivierung ab.
+
+Bei aktivierter Startkorrektur zeigt Windows nach der Anmeldung eine
+UAC-Abfrage. Vor dem Patch startet ein unabhängiger erhöhter Watchdog. Erst wenn
+App, Patch-Worker und Watchdog dieselbe DWM-Prozessidentität und denselben
+Schreibplan bestätigt haben, bleibt die Korrektur aktiv. Fehlt der atomare
+Zustands-Commit, startet der Watchdog DWM ungepatcht neu und die Startkorrektur
+wird für weitere Anmeldungen deaktiviert. Native HDR-Inhalte bleiben auch in
+diesem Pfad unverändert.
+
+EXE, Fenster, Tray, Setup und Verknüpfungen verwenden dasselbe
+Multi-Resolution-App-Symbol.
 
 ## Technischer Fix gegenüber 1.2.0
 
@@ -75,7 +132,14 @@ prüfende Freigabe erfordern.
 ```powershell
 dotnet build .\HDRCalibrate.sln -c Release -p:Platform=x64 -warnaserror
 .\tests\HDRCalibrate.Tests\bin\x64\Release\net481\HDRCalibrate.Tests.exe
+.\tools\Build-Installer.ps1 -Configuration Release
 ```
+
+Das Installer-Buildskript verwendet einen fest gepinnten und per SHA-256 sowie
+Authenticode geprüften Inno-Setup-Compiler. Falls kein vertrauenswürdiger
+Compiler vorhanden ist, wird er ausschließlich in
+`installer\artifacts\toolcache` bereitgestellt. Installer und Prüfsumme landen
+unter `installer\artifacts\output`.
 
 Die automatisierten Tests verändern DWM nicht. Der reale Hardwaretest läuft
 ausschließlich über den separaten Watchdog-Pfad und erzeugt Screenshots sowie

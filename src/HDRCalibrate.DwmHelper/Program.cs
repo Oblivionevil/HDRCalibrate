@@ -13,9 +13,12 @@ namespace HDRCalibrate.DwmHelper
     internal static class Program
     {
         private const string OperationMutexName = "Local\\HDRCalibrate.DwmOperation";
-        private const string TimedTestMutexName = "Local\\HDRCalibrate.DwmTimedTestSupervisor";
+        private const string SupervisedMutationMutexName = "Local\\HDRCalibrate.DwmSupervisedMutation";
         private const int ChildReadyTimeoutMilliseconds = 2000;
         private const int RecoveryTimeoutMilliseconds = 20000;
+        private const int PersistentApplySetupDeadlineMilliseconds = 30000;
+        private const int PersistentApplyCommitDeadlineMilliseconds = 15000;
+        private const int PersistentApplyAbsoluteDeadlineMilliseconds = 65000;
 
         private static readonly XmlSerializer RequestSerializer = new XmlSerializer(typeof(DwmPatchRequest));
         private static readonly XmlSerializer ResponseSerializer = new XmlSerializer(typeof(DwmPatchResponse));
@@ -45,11 +48,11 @@ namespace HDRCalibrate.DwmHelper
                         break;
                     case DwmPatchCommand.Apply:
                         DwmPatchSafety.EnsureLivePatchEnabled();
-                        EnsureNoTimedTestActive();
+                        EnsureNoSupervisedMutationActive();
                         response = RunWithOperationMutex(() => new DwmPatchEngine().Apply(request.Settings), 0);
                         break;
                     case DwmPatchCommand.Reset:
-                        EnsureNoTimedTestActive();
+                        EnsureNoSupervisedMutationActive();
                         response = RunWithOperationMutex(() => new DwmPatchEngine().Reset(), 3000);
                         break;
                     case DwmPatchCommand.SafetyReset:
@@ -70,6 +73,22 @@ namespace HDRCalibrate.DwmHelper
                         DwmPatchSafety.EnsureTimedTestEnabled();
                         ValidateInternalRequest(request);
                         response = RunTimedTestWatchdog(request);
+                        break;
+                    case DwmPatchCommand.SupervisedApply:
+                        DwmPatchSafety.EnsureLivePatchEnabled();
+                        response = RunSupervisedPersistentApply(request);
+                        break;
+                    case DwmPatchCommand.SupervisedApplyWorker:
+                        DwmPatchSafety.EnsureLivePatchEnabled();
+                        ValidateInternalRequest(request);
+                        response = RunWithOperationMutex(
+                            () => RunSupervisedPersistentWorker(request, responsePath),
+                            ChildReadyTimeoutMilliseconds);
+                        break;
+                    case DwmPatchCommand.SupervisedApplyWatchdog:
+                        DwmPatchSafety.EnsureLivePatchEnabled();
+                        ValidateInternalRequest(request);
+                        response = RunSupervisedPersistentWatchdog(request);
                         break;
                     default:
                         throw new ArgumentOutOfRangeException(nameof(request.Command));
@@ -94,7 +113,7 @@ namespace HDRCalibrate.DwmHelper
         private static DwmPatchResponse RunSupervisedTimedTest(DwmPatchRequest outerRequest)
         {
             TimedDwmTestRunner.ValidateSettings(outerRequest.Settings);
-            using (var testMutex = new Mutex(false, TimedTestMutexName))
+            using (var testMutex = new Mutex(false, SupervisedMutationMutexName))
             {
                 var ownsTestMutex = TryAcquire(testMutex, 0);
                 if (!ownsTestMutex)
@@ -123,6 +142,7 @@ namespace HDRCalibrate.DwmHelper
             DwmPatchResponse applied = null;
             DwmPatchResponse reset = null;
             Exception testFailure = null;
+            long activationObservedAtMilliseconds = -1;
 
             try
             {
@@ -171,11 +191,14 @@ namespace HDRCalibrate.DwmHelper
                 {
                     if (TryReadResponse(paths.Activation, out var activation) && activation.Success)
                     {
+                        if (applied == null)
+                        {
+                            activationObservedAtMilliseconds = supervisorClock.ElapsedMilliseconds;
+                            fallbackDeadline = checked((int)activationObservedAtMilliseconds
+                                + TimedDwmTestRunner.DurationMilliseconds
+                                + TimedDwmTestRunner.SupervisorGraceMilliseconds);
+                        }
                         applied = activation;
-                        fallbackDeadline = checked((int)supervisorClock.ElapsedMilliseconds
-                            + TimedDwmTestRunner.GetRemainingDurationMilliseconds(
-                                activation.PatchActivatedUtcTicks, DateTime.UtcNow)
-                            + TimedDwmTestRunner.SupervisorGraceMilliseconds);
                     }
                     if (TryReadResponse(paths.WorkerResponse, out var workerResponse))
                     {
@@ -217,6 +240,29 @@ namespace HDRCalibrate.DwmHelper
                 if (watchdog != null && !watchdog.HasExited) watchdog.WaitForExit(2000);
                 if (watchdog != null && !watchdog.HasExited) TryTerminateExact(watchdogIdentity);
 
+                var measured = MeasureActiveDuration(applied?.PatchActivatedUtcTicks ?? 0, reset.WatchdogResetUtcTicks);
+                if (applied != null && applied.Success)
+                {
+                    if (activationObservedAtMilliseconds < 0)
+                    {
+                        testFailure = testFailure ?? new InvalidOperationException(
+                            "Der Supervisor konnte die Testdauer nicht monoton überwachen.");
+                    }
+                    else
+                    {
+                        var observedDuration = supervisorClock.ElapsedMilliseconds - activationObservedAtMilliseconds;
+                        var verifiedDuration = reset.TestDurationMilliseconds > 0
+                            ? reset.TestDurationMilliseconds
+                            : observedDuration;
+                        if (verifiedDuration < TimedDwmTestRunner.DurationMilliseconds)
+                            testFailure = testFailure ?? new InvalidOperationException(
+                                "Der unabhängige Reset erfolgte vor Ablauf der vollständigen Testdauer.");
+                        measured = checked((int)Math.Max(
+                            TimedDwmTestRunner.DurationMilliseconds,
+                            Math.Min(TimedDwmTestRunner.DurationMilliseconds + 1000L, verifiedDuration)));
+                    }
+                }
+
                 if (testFailure != null)
                 {
                     return new DwmPatchResponse
@@ -232,7 +278,6 @@ namespace HDRCalibrate.DwmHelper
                     };
                 }
 
-                var measured = MeasureActiveDuration(applied.PatchActivatedUtcTicks, reset.WatchdogResetUtcTicks);
                 return TimedDwmTestRunner.Combine(applied, reset, measured);
             }
             finally
@@ -278,13 +323,19 @@ namespace HDRCalibrate.DwmHelper
 
             var clock = Stopwatch.StartNew();
             var deadline = TimedDwmTestRunner.SetupDeadlineMilliseconds;
+            var activationObserved = false;
+            long activationObservedAtMilliseconds = -1;
             while (clock.ElapsedMilliseconds < deadline)
             {
                 if (TryReadResponse(request.ActivationPath, out var activation) && activation.Success)
                 {
-                    deadline = checked((int)clock.ElapsedMilliseconds
-                        + TimedDwmTestRunner.GetRemainingDurationMilliseconds(
-                            activation.PatchActivatedUtcTicks, DateTime.UtcNow));
+                    if (!activationObserved)
+                    {
+                        activationObserved = true;
+                        activationObservedAtMilliseconds = clock.ElapsedMilliseconds;
+                        deadline = checked((int)clock.ElapsedMilliseconds
+                            + TimedDwmTestRunner.DurationMilliseconds);
+                    }
                 }
                 if (TryReadResponse(request.WorkerResponsePath, out var worker) && !worker.Success)
                     break;
@@ -295,13 +346,391 @@ namespace HDRCalibrate.DwmHelper
                 Thread.Sleep(5);
             }
 
+            var verifiedDurationMilliseconds = activationObservedAtMilliseconds < 0
+                ? 0
+                : checked((int)Math.Max(0, Math.Min(
+                    TimedDwmTestRunner.DurationMilliseconds + 1000L,
+                    clock.ElapsedMilliseconds - activationObservedAtMilliseconds)));
             var reset = Recover(
                 request.CorrelationToken,
                 request.WorkerIdentityPath,
                 request.RecoveryResponsePath,
                 0,
-                "Unabhängiger Watchdog");
+                "Unabhängiger Watchdog",
+                verifiedDurationMilliseconds);
             return reset;
+        }
+
+        private static DwmPatchResponse RunSupervisedPersistentApply(DwmPatchRequest outerRequest)
+        {
+            if (outerRequest == null) throw new ArgumentNullException(nameof(outerRequest));
+            // Recheck after UAC, before even starting an elevated mutation worker.
+            WindowsEnvironmentGuard.RequireCurrent(outerRequest.ExpectedWindowsEnvironment);
+            TimedDwmTestRunner.ValidateSettings(outerRequest.Settings);
+            if (!TimedDwmTestRunner.IsValidCorrelationToken(outerRequest.CorrelationToken))
+                throw new InvalidDataException("Der überwachte Apply-Token ist ungültig.");
+
+            var paths = CreateSupervisedApplyPaths(outerRequest.CorrelationToken);
+            ValidateExpectedPath(outerRequest.ActivationPath, paths.Activation, "Aktivierung");
+            ValidateExpectedPath(outerRequest.CommitPath, paths.Commit, "Commit");
+            ValidateExpectedPath(outerRequest.CommitAcceptedPath, paths.CommitAccepted, "Commit-Bestätigung");
+            ValidateExpectedPath(outerRequest.RecoveryResponsePath, paths.RecoveryResponse, "Recovery");
+            ValidateStartupApprovalProof(outerRequest);
+
+            using (var supervisorMutex = new Mutex(false, SupervisedMutationMutexName))
+            {
+                var ownsMutex = TryAcquire(supervisorMutex, 0);
+                if (!ownsMutex)
+                    throw new InvalidOperationException("Eine andere überwachte DWM-Operation läuft bereits.");
+                try
+                {
+                    return RunSupervisedPersistentApplyCore(
+                        outerRequest.Settings, paths, outerRequest.ExpectedWindowsEnvironment, outerRequest.StartupApproval);
+                }
+                finally
+                {
+                    supervisorMutex.ReleaseMutex();
+                }
+            }
+        }
+
+        private static DwmPatchResponse RunSupervisedPersistentApplyCore(
+            HDRCalibrate.Core.CalibrationSettings settings,
+            SupervisedApplyPaths paths,
+            WindowsEnvironmentIdentity expectedWindowsEnvironment,
+            StartupApprovalFileProof startupApproval)
+        {
+            Process watchdog = null;
+            Process worker = null;
+            TimedTestProcessIdentity watchdogIdentity = null;
+            TimedTestProcessIdentity workerIdentity = null;
+            var helperPath = GetCurrentExecutablePath();
+            var supervisorClock = new Stopwatch();
+            var fallbackDeadline = PersistentApplySetupDeadlineMilliseconds;
+            DwmPatchResponse applied = null;
+            DwmPatchResponse committed = null;
+            DwmPatchResponse reset = null;
+            Exception applyFailure = null;
+            var watchdogArmed = false;
+            var outcomeFinalized = false;
+
+            try
+            {
+                WriteRequest(paths.WatchdogRequest, new DwmPatchRequest
+                {
+                    Command = DwmPatchCommand.SupervisedApplyWatchdog,
+                    CorrelationToken = paths.Token,
+                    ReadyPath = paths.WatchdogReady,
+                    StartGatePath = paths.StartGate,
+                    WorkerIdentityPath = paths.WorkerIdentity,
+                    WorkerResponsePath = paths.WorkerResponse,
+                    ActivationPath = paths.Activation,
+                    RecoveryResponsePath = paths.RecoveryResponse,
+                    CommitPath = paths.Commit,
+                    CommitAcceptedPath = paths.CommitAccepted
+                });
+                WriteRequest(paths.WorkerRequest, new DwmPatchRequest
+                {
+                    Command = DwmPatchCommand.SupervisedApplyWorker,
+                    Settings = settings.Clone(),
+                    ExpectedWindowsEnvironment = expectedWindowsEnvironment.Clone(),
+                    StartupApproval = startupApproval,
+                    CorrelationToken = paths.Token,
+                    StartGatePath = paths.StartGate,
+                    WorkerIdentityPath = paths.WorkerIdentity,
+                    WorkerResponsePath = paths.WorkerResponse,
+                    ActivationPath = paths.Activation,
+                    RecoveryResponsePath = paths.RecoveryResponse,
+                    CommitPath = paths.Commit,
+                    CommitAcceptedPath = paths.CommitAccepted
+                });
+
+                watchdog = StartChild(helperPath, paths.WatchdogRequest, paths.WatchdogStatus);
+                watchdogIdentity = GetProcessIdentity(watchdog);
+                WaitForSuccessfulResponse(
+                    paths.WatchdogReady,
+                    ChildReadyTimeoutMilliseconds,
+                    "Der unabhängige Apply-Watchdog wurde nicht rechtzeitig bereit.");
+
+                worker = StartChild(helperPath, paths.WorkerRequest, paths.WorkerResponse);
+                workerIdentity = GetProcessIdentity(worker);
+                WriteIdentity(paths.WorkerIdentity, workerIdentity);
+                WriteResponse(paths.StartGate, new DwmPatchResponse
+                {
+                    Success = true,
+                    WatchdogArmed = true,
+                    CorrelationToken = paths.Token,
+                    Message = "Startsignal für das überwachte dauerhafte Anwenden."
+                });
+                watchdogArmed = true;
+                supervisorClock.Start();
+
+                while (supervisorClock.ElapsedMilliseconds < PersistentApplyAbsoluteDeadlineMilliseconds)
+                {
+                    if (TryReadResponse(paths.Activation, out var activation) && activation.Success)
+                    {
+                        if (applied == null)
+                            fallbackDeadline = checked((int)supervisorClock.ElapsedMilliseconds
+                                + PersistentApplyCommitDeadlineMilliseconds + 1000);
+                        applied = activation;
+                    }
+                    if (TryReadResponse(paths.WorkerResponse, out var workerResponse))
+                    {
+                        if (workerResponse.Success) applied = workerResponse;
+                        else applyFailure = new InvalidOperationException(workerResponse.Message);
+                    }
+                    if (TryReadResponse(paths.CommitAccepted, out var accepted) && accepted.Success)
+                    {
+                        committed = accepted;
+                        break;
+                    }
+                    if (TryReadResponse(paths.RecoveryResponse, out var recovery) && recovery.Success)
+                    {
+                        reset = recovery;
+                        break;
+                    }
+
+                    if (watchdog.HasExited || supervisorClock.ElapsedMilliseconds >= fallbackDeadline)
+                    {
+                        reset = RecoverOrTakeOver(
+                            paths.Token,
+                            paths,
+                            workerIdentity,
+                            watchdog,
+                            watchdogIdentity,
+                            watchdog.HasExited
+                                ? "Apply-Watchdog endete vor einer bestätigten Commit-Entscheidung."
+                                : "Apply-Supervisor-Sicherheitsfrist erreicht.");
+                        break;
+                    }
+                    Thread.Sleep(10);
+                }
+
+                if (committed != null)
+                {
+                    SupervisedApplyProtocol.ValidateCommittedApply(paths.Token, applied, committed);
+                    var identity = new TimedTestProcessIdentity
+                    {
+                        ProcessId = committed.DwmProcessId,
+                        StartTimeUtcTicks = committed.DwmStartTimeUtcTicks
+                    };
+                    if (!IsExactProcessAlive(identity))
+                        throw new InvalidOperationException("Der bestätigte DWM-Prozess läuft nicht mehr.");
+
+                    if (watchdog != null && !watchdog.HasExited) watchdog.WaitForExit(2000);
+                    if (watchdog != null && !watchdog.HasExited)
+                        throw new InvalidOperationException("Der Apply-Watchdog wurde nach dem Commit nicht beendet.");
+
+                    applied.WatchdogArmed = true;
+                    applied.CommitAccepted = true;
+                    applied.CorrelationToken = paths.Token;
+                    applied.Message = "DWM-SDR-Korrektur überwacht angewendet; Zustands-Commit bestätigt.";
+                    outcomeFinalized = true;
+                    return applied;
+                }
+
+                if (reset == null)
+                    reset = RecoverOrTakeOver(
+                        paths.Token,
+                        paths,
+                        workerIdentity,
+                        watchdog,
+                        watchdogIdentity,
+                        "Das überwachte Anwenden überschritt die absolute Sicherheitsfrist.");
+
+                var failureResponse = CreateRecoveredApplyFailure(paths.Token, reset, applyFailure);
+                outcomeFinalized = true;
+                return failureResponse;
+            }
+            catch (Exception supervisorFailure)
+            {
+                if (!watchdogArmed || outcomeFinalized) throw;
+
+                try
+                {
+                    reset = RecoverOrTakeOver(
+                        paths.Token,
+                        paths,
+                        workerIdentity,
+                        watchdog,
+                        watchdogIdentity,
+                        "Der Apply-Supervisor ist vor einer sicheren Abschlussentscheidung fehlgeschlagen.");
+                    var failureResponse = CreateRecoveredApplyFailure(paths.Token, reset, supervisorFailure);
+                    outcomeFinalized = true;
+                    return failureResponse;
+                }
+                catch (Exception recoveryFailure)
+                {
+                    // Do not terminate the independently running watchdog or remove its IPC
+                    // files. It is the remaining authority that can still reset a patched DWM.
+                    throw new AggregateException(
+                        "Der Apply-Supervisor ist fehlgeschlagen; der unabhängige Watchdog bleibt für die Rücksetzung aktiv.",
+                        supervisorFailure,
+                        recoveryFailure);
+                }
+            }
+            finally
+            {
+                TryTerminateExact(workerIdentity);
+                if (!watchdogArmed || outcomeFinalized) TryTerminateExact(watchdogIdentity);
+                if (worker != null) worker.Dispose();
+                if (watchdog != null) watchdog.Dispose();
+                if (!watchdogArmed || outcomeFinalized)
+                    foreach (var path in paths.All) TryDelete(path);
+            }
+        }
+
+        private static DwmPatchResponse CreateRecoveredApplyFailure(
+            string token,
+            DwmPatchResponse reset,
+            Exception failure)
+        {
+            if (reset == null || !reset.Success)
+                throw new InvalidDataException("Die überwachte Apply-Rücksetzung wurde nicht bestätigt.");
+            return new DwmPatchResponse
+            {
+                Success = false,
+                WatchdogArmed = true,
+                RecoveryPerformed = true,
+                WatchdogResetUtcTicks = reset.WatchdogResetUtcTicks,
+                DwmProcessId = reset.DwmProcessId,
+                DwmStartTimeUtcTicks = reset.DwmStartTimeUtcTicks,
+                DwmCoreVersion = reset.DwmCoreVersion,
+                CorrelationToken = token,
+                Message = "Das dauerhafte Anwenden wurde nicht bestätigt; DWM wurde sicher ungepatcht neu gestartet. " +
+                    (failure == null ? string.Empty : failure.Message),
+                Diagnostics = reset.Diagnostics ?? new List<string>()
+            };
+        }
+
+        private static DwmPatchResponse RunSupervisedPersistentWorker(
+            DwmPatchRequest request,
+            string responsePath)
+        {
+            ValidateStartupApprovalProof(request);
+            TimedDwmTestRunner.ValidateSettings(request.Settings);
+            WaitForSuccessfulResponse(
+                request.StartGatePath,
+                ChildReadyTimeoutMilliseconds,
+                "Das Startsignal des überwachten Anwendens fehlt.");
+
+            var response = new DwmPatchEngine().ApplySupervisedPersistent(request.Settings, activation =>
+            {
+                activation.WatchdogArmed = true;
+                activation.CorrelationToken = request.CorrelationToken;
+                WriteResponse(request.ActivationPath, activation);
+            }, request.ExpectedWindowsEnvironment, request.StartupApproval);
+            response.WatchdogArmed = true;
+            response.CorrelationToken = request.CorrelationToken;
+            WriteResponse(responsePath, response);
+
+            // The watchdog terminates this exact process after commit or before recovery.
+            // Holding the operation mutex prevents every competing DWM mutation meanwhile.
+            Thread.Sleep(Timeout.Infinite);
+            throw new InvalidOperationException("Der überwachte Apply-Worker wurde unerwartet fortgesetzt.");
+        }
+
+        private static void ValidateStartupApprovalProof(DwmPatchRequest request)
+        {
+            if (request.StartupApproval == null) return; // Explicit manual apply has no startup policy.
+            var activationPath = ValidateIpcPath(request.ActivationPath);
+            var expectedPolicyPath = Path.GetFullPath(Path.Combine(
+                Path.GetDirectoryName(activationPath), "..", "dwm-startup-policy.xml"));
+            if (!string.Equals(
+                Path.GetFullPath(request.StartupApproval.PolicyPath), expectedPolicyPath, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Der Startfreigabenachweis stammt nicht aus dem Anwendungsdatenverzeichnis.");
+            request.StartupApproval.RequireUnchanged();
+        }
+
+        private static DwmPatchResponse RunSupervisedPersistentWatchdog(DwmPatchRequest request)
+        {
+            WriteResponse(request.ReadyPath, new DwmPatchResponse
+            {
+                Success = true,
+                WatchdogArmed = true,
+                CorrelationToken = request.CorrelationToken,
+                Message = "Unabhängiger Apply-Watchdog ist bereit."
+            });
+            WaitForSuccessfulResponse(
+                request.StartGatePath,
+                ChildReadyTimeoutMilliseconds * 2,
+                "Der Apply-Watchdog erhielt kein Startsignal.");
+
+            var clock = Stopwatch.StartNew();
+            var deadline = PersistentApplySetupDeadlineMilliseconds;
+            DwmPatchResponse activation = null;
+            DwmPatchResponse worker = null;
+            while (clock.ElapsedMilliseconds < deadline)
+            {
+                if (TryReadResponse(request.ActivationPath, out var observedActivation)
+                    && observedActivation.Success)
+                {
+                    if (activation == null)
+                        deadline = checked((int)clock.ElapsedMilliseconds
+                            + PersistentApplyCommitDeadlineMilliseconds);
+                    activation = observedActivation;
+                }
+                if (TryReadResponse(request.WorkerResponsePath, out var observedWorker))
+                {
+                    if (!observedWorker.Success) break;
+                    worker = observedWorker;
+                }
+                if (activation != null
+                    && worker != null
+                    && TryReadResponse(request.CommitPath, out var commit)
+                    && SupervisedApplyProtocol.IsValidCommit(request.CorrelationToken, activation, worker, commit))
+                {
+                    var dwmIdentity = new TimedTestProcessIdentity
+                    {
+                        ProcessId = worker.DwmProcessId,
+                        StartTimeUtcTicks = worker.DwmStartTimeUtcTicks
+                    };
+                    if (!IsExactProcessAlive(dwmIdentity)) break;
+                    if (TryReadIdentity(request.WorkerIdentityPath, out var workerIdentity))
+                        TryTerminateExact(workerIdentity);
+
+                    var accepted = CopyApplyResponse(worker);
+                    accepted.Success = true;
+                    accepted.WatchdogArmed = true;
+                    accepted.CommitAccepted = true;
+                    accepted.CorrelationToken = request.CorrelationToken;
+                    accepted.Message = "Der unabhängige Watchdog hat den Zustands-Commit bestätigt.";
+                    WriteResponse(request.CommitAcceptedPath, accepted);
+                    return accepted;
+                }
+                if (File.Exists(request.WorkerIdentityPath)
+                    && TryReadIdentity(request.WorkerIdentityPath, out var observedWorkerIdentity)
+                    && !IsExactProcessAlive(observedWorkerIdentity))
+                    break;
+                Thread.Sleep(5);
+            }
+
+            return Recover(
+                request.CorrelationToken,
+                request.WorkerIdentityPath,
+                request.RecoveryResponsePath,
+                0,
+                "Unabhängiger Apply-Watchdog");
+        }
+
+        private static DwmPatchResponse CopyApplyResponse(DwmPatchResponse source)
+        {
+            return new DwmPatchResponse
+            {
+                Success = source.Success,
+                DwmProcessId = source.DwmProcessId,
+                DwmStartTimeUtcTicks = source.DwmStartTimeUtcTicks,
+                DwmCoreVersion = source.DwmCoreVersion,
+                PatchedShaderCount = source.PatchedShaderCount,
+                PatchedConstantVectorCount = source.PatchedConstantVectorCount,
+                ChangedByteCount = source.ChangedByteCount,
+                ModifiedPageCount = source.ModifiedPageCount,
+                PatchActivatedUtcTicks = source.PatchActivatedUtcTicks,
+                PatchPlanFingerprint = source.PatchPlanFingerprint,
+                Diagnostics = source.Diagnostics == null
+                    ? new List<string>()
+                    : new List<string>(source.Diagnostics)
+            };
         }
 
         private static DwmPatchResponse RecoverOrTakeOver(
@@ -312,23 +741,60 @@ namespace HDRCalibrate.DwmHelper
             TimedTestProcessIdentity watchdogIdentity,
             string reason)
         {
+            return RecoverOrTakeOverCore(
+                token,
+                paths.WorkerIdentity,
+                paths.RecoveryResponse,
+                workerIdentity,
+                watchdog,
+                watchdogIdentity,
+                reason);
+        }
+
+        private static DwmPatchResponse RecoverOrTakeOver(
+            string token,
+            SupervisedApplyPaths paths,
+            TimedTestProcessIdentity workerIdentity,
+            Process watchdog,
+            TimedTestProcessIdentity watchdogIdentity,
+            string reason)
+        {
+            return RecoverOrTakeOverCore(
+                token,
+                paths.WorkerIdentity,
+                paths.RecoveryResponse,
+                workerIdentity,
+                watchdog,
+                watchdogIdentity,
+                reason);
+        }
+
+        private static DwmPatchResponse RecoverOrTakeOverCore(
+            string token,
+            string workerIdentityPath,
+            string recoveryResponsePath,
+            TimedTestProcessIdentity workerIdentity,
+            Process watchdog,
+            TimedTestProcessIdentity watchdogIdentity,
+            string reason)
+        {
             var deadline = Stopwatch.StartNew();
             while (deadline.ElapsedMilliseconds < 1000)
             {
-                if (TryReadResponse(paths.RecoveryResponse, out var existing) && existing.Success)
+                if (TryReadResponse(recoveryResponsePath, out var existing) && existing.Success)
                     return existing;
                 Thread.Sleep(10);
             }
 
             try
             {
-                return Recover(token, paths.WorkerIdentity, paths.RecoveryResponse, 250, reason);
+                return Recover(token, workerIdentityPath, recoveryResponsePath, 250, reason);
             }
             catch (TimeoutException)
             {
                 while (deadline.ElapsedMilliseconds < 17000)
                 {
-                    if (TryReadResponse(paths.RecoveryResponse, out var existing) && existing.Success)
+                    if (TryReadResponse(recoveryResponsePath, out var existing) && existing.Success)
                         return existing;
                     if (watchdog != null && watchdog.HasExited) break;
                     Thread.Sleep(20);
@@ -336,7 +802,7 @@ namespace HDRCalibrate.DwmHelper
 
                 TryTerminateExact(watchdogIdentity);
                 TryTerminateExact(workerIdentity);
-                return Recover(token, paths.WorkerIdentity, paths.RecoveryResponse, 2000,
+                return Recover(token, workerIdentityPath, recoveryResponsePath, 2000,
                     reason + " Der nicht antwortende Watchdog wurde übernommen.");
             }
         }
@@ -346,7 +812,8 @@ namespace HDRCalibrate.DwmHelper
             string workerIdentityPath,
             string recoveryResponsePath,
             int leaderTimeoutMilliseconds,
-            string actor)
+            string actor,
+            int verifiedTestDurationMilliseconds = 0)
         {
             using (var leader = new Mutex(false, "Local\\HDRCalibrate.DwmRecoveryLeader-" + token))
             {
@@ -365,6 +832,7 @@ namespace HDRCalibrate.DwmHelper
                     var reset = RunWithOperationMutex(() => new DwmPatchEngine().Reset(), 3000);
                     reset.WatchdogArmed = true;
                     reset.WatchdogResetUtcTicks = resetStarted;
+                    reset.TestDurationMilliseconds = verifiedTestDurationMilliseconds;
                     if (reset.Diagnostics == null) reset.Diagnostics = new List<string>();
                     reset.Diagnostics.Insert(0, actor + ": Patch-Worker beendet; ungepatchter DWM-Neustart eingeleitet.");
                     WriteResponse(recoveryResponsePath, reset);
@@ -407,12 +875,12 @@ namespace HDRCalibrate.DwmHelper
             }
         }
 
-        private static void EnsureNoTimedTestActive()
+        private static void EnsureNoSupervisedMutationActive()
         {
-            using (var mutex = new Mutex(false, TimedTestMutexName))
+            using (var mutex = new Mutex(false, SupervisedMutationMutexName))
             {
                 if (!TryAcquire(mutex, 0))
-                    throw new InvalidOperationException("Während des überwachten 5-Sekunden-Tests ist keine zweite DWM-Operation zulässig.");
+                    throw new InvalidOperationException("Während einer überwachten DWM-Operation ist keine zweite DWM-Operation zulässig.");
                 mutex.ReleaseMutex();
             }
         }
@@ -429,7 +897,15 @@ namespace HDRCalibrate.DwmHelper
                 request.ActivationPath,
                 request.RecoveryResponsePath
             };
-            if (request.Command == DwmPatchCommand.TimedTestWatchdog)
+            if (request.Command == DwmPatchCommand.SupervisedApplyWorker
+                || request.Command == DwmPatchCommand.SupervisedApplyWatchdog)
+                paths = paths.Concat(new[]
+                {
+                    request.CommitPath,
+                    request.CommitAcceptedPath
+                }).ToArray();
+            if (request.Command == DwmPatchCommand.TimedTestWatchdog
+                || request.Command == DwmPatchCommand.SupervisedApplyWatchdog)
                 paths = paths.Concat(new[] { request.ReadyPath }).ToArray();
             foreach (var path in paths)
             {
@@ -437,6 +913,14 @@ namespace HDRCalibrate.DwmHelper
                 if (Path.GetFileName(validated).IndexOf(request.CorrelationToken, StringComparison.OrdinalIgnoreCase) < 0)
                     throw new UnauthorizedAccessException("Eine interne IPC-Datei gehört nicht zum Test-Token.");
             }
+        }
+
+        private static void ValidateExpectedPath(string supplied, string expected, string label)
+        {
+            var validated = ValidateIpcPath(supplied);
+            if (!string.Equals(validated, expected, StringComparison.OrdinalIgnoreCase))
+                throw new UnauthorizedAccessException(
+                    "Der IPC-Pfad für " + label + " entspricht nicht dem überwachten Apply-Token.");
         }
 
         private static Process StartChild(string helperPath, string requestPath, string responsePath)
@@ -694,6 +1178,13 @@ namespace HDRCalibrate.DwmHelper
             return new TimedTestPaths(root, token);
         }
 
+        private static SupervisedApplyPaths CreateSupervisedApplyPaths(string token)
+        {
+            var root = GetRequestRoot();
+            Directory.CreateDirectory(root);
+            return new SupervisedApplyPaths(root, token);
+        }
+
         private static void TryDelete(string path)
         {
             try
@@ -735,6 +1226,50 @@ namespace HDRCalibrate.DwmHelper
             public string WorkerIdentity { get; }
             public string StartGate { get; }
             public string Activation { get; }
+            public string RecoveryResponse { get; }
+            public IEnumerable<string> All { get; }
+
+            private static string Make(string root, string prefix, string token)
+            {
+                return Path.Combine(root, prefix + "-" + token + ".xml");
+            }
+        }
+
+        private sealed class SupervisedApplyPaths
+        {
+            public SupervisedApplyPaths(string root, string token)
+            {
+                Token = token;
+                WatchdogRequest = Make(root, "apply-watchdog-request", token);
+                WatchdogStatus = Make(root, "apply-watchdog-status", token);
+                WatchdogReady = Make(root, "apply-watchdog-ready", token);
+                WorkerRequest = Make(root, "apply-worker-request", token);
+                WorkerResponse = Make(root, "apply-worker-response", token);
+                WorkerIdentity = Make(root, "apply-worker-identity", token);
+                StartGate = Make(root, "apply-start-gate", token);
+                Activation = Make(root, "apply-activation", token);
+                Commit = Make(root, "apply-commit", token);
+                CommitAccepted = Make(root, "apply-commit-accepted", token);
+                RecoveryResponse = Make(root, "apply-recovery", token);
+                All = new[]
+                {
+                    WatchdogRequest, WatchdogStatus, WatchdogReady, WorkerRequest,
+                    WorkerResponse, WorkerIdentity, StartGate, Activation, Commit,
+                    CommitAccepted, RecoveryResponse
+                };
+            }
+
+            public string Token { get; }
+            public string WatchdogRequest { get; }
+            public string WatchdogStatus { get; }
+            public string WatchdogReady { get; }
+            public string WorkerRequest { get; }
+            public string WorkerResponse { get; }
+            public string WorkerIdentity { get; }
+            public string StartGate { get; }
+            public string Activation { get; }
+            public string Commit { get; }
+            public string CommitAccepted { get; }
             public string RecoveryResponse { get; }
             public IEnumerable<string> All { get; }
 

@@ -81,6 +81,7 @@ namespace HDRCalibrate.Dwm
                 WatchdogArmed = true,
                 TestedDwmProcessId = applied.DwmProcessId,
                 TestDurationMilliseconds = measuredDurationMilliseconds,
+                PatchPlanFingerprint = applied.PatchPlanFingerprint,
                 Diagnostics = diagnostics
             };
         }

@@ -14,6 +14,7 @@ namespace HDRCalibrate.Services
         public int SessionId { get; set; }
         public string DwmCoreVersion { get; set; }
         public DateTime AppliedUtc { get; set; }
+        public string PatchPlanFingerprint { get; set; }
         public CalibrationSettings Settings { get; set; } = new CalibrationSettings();
     }
 

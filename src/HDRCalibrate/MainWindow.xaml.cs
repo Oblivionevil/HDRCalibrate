@@ -5,10 +5,16 @@ namespace HDRCalibrate
 {
     public partial class MainWindow : Window
     {
-        private readonly MainViewModel _viewModel = new MainViewModel();
+        private readonly MainViewModel _viewModel;
 
         public MainWindow()
+            : this(new MainViewModel())
         {
+        }
+
+        public MainWindow(MainViewModel viewModel)
+        {
+            _viewModel = viewModel ?? throw new System.ArgumentNullException(nameof(viewModel));
             InitializeComponent();
             DataContext = _viewModel;
             Loaded += OnLoaded;

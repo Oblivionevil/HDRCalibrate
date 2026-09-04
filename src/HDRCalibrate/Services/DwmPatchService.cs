@@ -16,6 +16,7 @@ namespace HDRCalibrate.Services
     {
         private const int HelperTimeoutMilliseconds = 60000;
         private const int TimedTestHelperTimeoutMilliseconds = 30000;
+        private const int SupervisedApplyHelperTimeoutMilliseconds = 90000;
         private static readonly TimeSpan RestartCooldown = TimeSpan.FromSeconds(10);
         private readonly XmlSerializer _requestSerializer = new XmlSerializer(typeof(DwmPatchRequest));
         private readonly XmlSerializer _responseSerializer = new XmlSerializer(typeof(DwmPatchResponse));
@@ -30,6 +31,20 @@ namespace HDRCalibrate.Services
             if (settings == null) throw new ArgumentNullException(nameof(settings));
             DwmPatchSafety.EnsureLivePatchEnabled();
             return InvokeElevated(DwmPatchCommand.Apply, settings);
+        }
+
+        public DwmPatchResponse ApplySupervised(
+            CalibrationSettings settings,
+            Action<DwmPatchResponse> persistActiveState,
+            WindowsEnvironmentIdentity expectedWindowsEnvironment,
+            StartupApprovalFileProof startupApproval = null)
+        {
+            if (settings == null) throw new ArgumentNullException(nameof(settings));
+            if (persistActiveState == null) throw new ArgumentNullException(nameof(persistActiveState));
+            WindowsEnvironmentGuard.RequireCurrent(expectedWindowsEnvironment);
+            startupApproval?.RequireUnchanged();
+            DwmPatchSafety.EnsureLivePatchEnabled();
+            return InvokeSupervisedApply(settings, persistActiveState, expectedWindowsEnvironment.Clone(), startupApproval);
         }
 
         public DwmPatchResponse Reset()
@@ -208,6 +223,207 @@ namespace HDRCalibrate.Services
                     TryDelete(responsePath + ".tmp");
                 }
             }
+        }
+
+        private DwmPatchResponse InvokeSupervisedApply(
+            CalibrationSettings settings,
+            Action<DwmPatchResponse> persistActiveState,
+            WindowsEnvironmentIdentity expectedWindowsEnvironment,
+            StartupApprovalFileProof startupApproval)
+        {
+            var helperPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "HDRCalibrate.DwmHelper.exe");
+            if (!File.Exists(helperPath))
+                throw new FileNotFoundException("Der erhöhte DWM-Helfer fehlt neben HDRCalibrate.exe.", helperPath);
+
+            var requestRoot = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "HDRCalibrate",
+                "Requests");
+            Directory.CreateDirectory(requestRoot);
+            EnforceAndMarkRestartCooldown(Path.GetDirectoryName(requestRoot));
+
+            var token = Guid.NewGuid().ToString("N");
+            var requestPath = Path.Combine(requestRoot, "request-" + token + ".xml");
+            var responsePath = Path.Combine(requestRoot, "response-" + token + ".xml");
+            var activationPath = Path.Combine(requestRoot, "apply-activation-" + token + ".xml");
+            var commitPath = Path.Combine(requestRoot, "apply-commit-" + token + ".xml");
+            var commitAcceptedPath = Path.Combine(requestRoot, "apply-commit-accepted-" + token + ".xml");
+            var recoveryPath = Path.Combine(requestRoot, "apply-recovery-" + token + ".xml");
+            var helperStarted = false;
+            var helperCompleted = false;
+            var commitAttempted = false;
+            var commitWritten = false;
+            var outcomeFinalized = false;
+            DwmPatchResponse savedActivation = null;
+            Exception commitError = null;
+
+            try
+            {
+                WriteXmlNew(requestPath, _requestSerializer, new DwmPatchRequest
+                {
+                    Command = DwmPatchCommand.SupervisedApply,
+                    Settings = settings.Clone(),
+                    ExpectedWindowsEnvironment = expectedWindowsEnvironment,
+                    StartupApproval = startupApproval,
+                    CorrelationToken = token,
+                    ActivationPath = activationPath,
+                    CommitPath = commitPath,
+                    CommitAcceptedPath = commitAcceptedPath,
+                    RecoveryResponsePath = recoveryPath
+                });
+
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = helperPath,
+                    Arguments = "--request " + QuoteArgument(requestPath) + " --response " + QuoteArgument(responsePath),
+                    WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory,
+                    UseShellExecute = true,
+                    Verb = "runas",
+                    WindowStyle = ProcessWindowStyle.Hidden
+                };
+
+                Process helper;
+                try
+                {
+                    helper = Process.Start(startInfo);
+                }
+                catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
+                {
+                    throw new OperationCanceledException("Die Administratorabfrage wurde abgebrochen.", ex);
+                }
+
+                if (helper == null) throw new InvalidOperationException("Der DWM-Helfer konnte nicht gestartet werden.");
+                using (helper)
+                {
+                    helperStarted = true;
+                    var stopwatch = Stopwatch.StartNew();
+                    while (!helper.HasExited
+                        && stopwatch.ElapsedMilliseconds < SupervisedApplyHelperTimeoutMilliseconds)
+                    {
+                        if (!commitAttempted
+                            && TryReadResponseFile(activationPath, out var activation))
+                        {
+                            commitAttempted = true;
+                            try
+                            {
+                                SupervisedApplyProtocol.ValidateResponse(activation, token, false);
+                                WindowsEnvironmentGuard.RequireCurrent(expectedWindowsEnvironment);
+                                startupApproval?.RequireUnchanged();
+                                persistActiveState(activation);
+                                savedActivation = activation;
+                                var commit = SupervisedApplyProtocol.CreateCommit(activation, token);
+                                WriteXmlNew(commitPath, _responseSerializer, commit);
+                                commitWritten = true;
+                            }
+                            catch (Exception ex)
+                            {
+                                commitError = ex;
+                            }
+                        }
+                        helper.WaitForExit(25);
+                    }
+
+                    helperCompleted = helper.HasExited;
+                    if (!helperCompleted)
+                        throw new TimeoutException(
+                            "Der überwachte DWM-Helfer antwortete nicht innerhalb von 90 Sekunden. " +
+                            "Sein unabhängiger Watchdog bleibt für die ungepatchte Rücksetzung verantwortlich.");
+                    helper.WaitForExit();
+                }
+
+                var response = ReadResponseFile(responsePath);
+                if (!response.Success && response.RecoveryPerformed && response.WatchdogArmed
+                    && response.DwmProcessId > 0 && response.DwmStartTimeUtcTicks > 0
+                    && response.WatchdogResetUtcTicks > 0
+                    && string.Equals(response.CorrelationToken, token, StringComparison.Ordinal))
+                    outcomeFinalized = true;
+                if (commitError != null)
+                {
+                    throw new AggregateException(
+                        "Der aktive DWM-Zustand konnte nicht sicher gespeichert werden; der Watchdog hat deshalb keinen Commit erhalten.",
+                        commitError,
+                        new InvalidOperationException(response.Message));
+                }
+                if (!response.Success)
+                {
+                    var diagnostic = response.Diagnostics == null
+                        ? string.Empty
+                        : string.Join(" | ", response.Diagnostics.Where(item => !string.IsNullOrWhiteSpace(item)));
+                    throw new InvalidOperationException(
+                        response.Message + (string.IsNullOrWhiteSpace(diagnostic) ? string.Empty : " (" + diagnostic + ")"));
+                }
+                if (!commitWritten)
+                    throw new InvalidDataException("Der überwachte Apply-Pfad endete ohne geschriebenen Zustands-Commit.");
+                SupervisedApplyProtocol.ValidateResponse(response, token, true);
+                SupervisedApplyProtocol.ValidateCommittedApply(token, savedActivation, response);
+                outcomeFinalized = true;
+                return response;
+            }
+            finally
+            {
+                // The supervisor can exit after handing recovery to an independent
+                // watchdog. Its exit alone does not make the shared IPC files disposable.
+                if (!helperStarted || outcomeFinalized)
+                {
+                    foreach (var path in new[]
+                    {
+                        requestPath, responsePath, activationPath, commitPath,
+                        commitAcceptedPath, recoveryPath
+                    })
+                    {
+                        TryDelete(path);
+                        TryDelete(path + ".tmp");
+                    }
+                }
+            }
+        }
+
+        private DwmPatchResponse ReadResponseFile(string path)
+        {
+            if (!File.Exists(path))
+                throw new InvalidDataException("Der DWM-Helfer hat keine Antwortdatei erzeugt.");
+            using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            using (var reader = XmlReader.Create(stream, new XmlReaderSettings
+            {
+                DtdProcessing = DtdProcessing.Prohibit,
+                XmlResolver = null
+            }))
+                return (DwmPatchResponse)_responseSerializer.Deserialize(reader)
+                    ?? throw new InvalidDataException("Die Antwort des DWM-Helfers ist leer.");
+        }
+
+        private bool TryReadResponseFile(string path, out DwmPatchResponse response)
+        {
+            response = null;
+            if (!File.Exists(path)) return false;
+            try
+            {
+                response = ReadResponseFile(path);
+                return response != null;
+            }
+            catch (IOException)
+            {
+                return false;
+            }
+            catch (XmlException)
+            {
+                return false;
+            }
+            catch (InvalidOperationException)
+            {
+                return false;
+            }
+        }
+
+        private static void WriteXmlNew(string path, XmlSerializer serializer, object value)
+        {
+            var temporary = path + ".tmp";
+            using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                serializer.Serialize(stream, value);
+                stream.Flush(true);
+            }
+            File.Move(temporary, path);
         }
 
         private static string QuoteArgument(string value)
