@@ -19,6 +19,30 @@ HDR-Shader und HDR-Inhalte bleiben unverändert. Independent Flip und bestimmte
 MPO-Pfade können DWM umgehen; entsprechende SDR-Inhalte erhalten dann keine
 Korrektur.
 
+## Bekannte Probleme
+
+### Chromium-Browser: zeitweise wechselndes Gamma
+
+In Chromium-basierten Browsern wie **Brave, Chrome und Edge** kann das Gamma
+innerhalb des Fensters gelegentlich zwischen korrigiertem und ursprünglichem
+Aussehen wechseln. HDR- oder Wide-Gamut-Inhalte können den Browser dazu bringen,
+das gesamte Fenster bereits als lineares scRGB auszugeben; auch Inhalte in
+anderen Tabs können daran beteiligt sein. Die sRGB-Linearisierung findet dann
+schon im Browser statt. Der von HDR Calibrate geänderte DWM-Konverter
+`SDR -> scRGB` wird für diese Ausgabe nicht mehr verwendet, sodass SDR-Inhalte
+zeitweise unkorrigiert erscheinen können, obwohl der DWM-Patch weiterhin aktiv
+ist.
+
+Das ist eine bekannte Einschränkung des DWM-only-Ansatzes und derzeit nicht
+behoben. In einer bereits vom Browser zusammengesetzten SDR/HDR-Fläche lassen
+sich SDR-Anteile nicht zuverlässig allein anhand der Pixelwerte unterscheiden.
+Eine pauschale Gamma-Nachkorrektur könnte deshalb auch HDR-Inhalte verändern.
+HDR Calibrate wendet eine solche Nachkorrektur nicht an und hookt keine Browser.
+
+Siehe die Hinweise der Ursprungsprojekte:
+[dwm_eotf – Known issues](https://github.com/ledoge/dwm_eotf#known-issues) und
+[dwm_eotf_rs – Known Issues](https://github.com/SERGEYDJUM/dwm_eotf_rs#known-issues).
+
 ## Bedienung und Sicherheit
 
 1. Windows-HDR einschalten und die App starten.
