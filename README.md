@@ -64,7 +64,7 @@ Browserausgabe garantiert unverändert lassen“ ist damit weiterhin nicht mögl
 
 Die Programmliste dieses Releases unterstützt Chromium-Browser, **nicht Heroes
 of the Storm oder beliebige Spiele**. Der experimentelle Ansatz zur gezielten
-DWM-Komposition steht separat unter [tools/SelectiveDwm](tools/SelectiveDwm/README.md)
+DWM-Komposition steht separat unter [tools/SelectiveDwm](https://github.com/Oblivionevil/HDRCalibrate/tree/v1.6.1/tools/SelectiveDwm)
 im Quellcode. Er ist nicht mit der Gamma-Korrektur integriert und wird weder
 vom Installer noch von der portablen App automatisch geladen.
 
@@ -73,7 +73,7 @@ erzwungenen HotS-Korrektur sind nicht nachgewiesen. Die Veröffentlichung von
 v1.6.1 wartet nicht auf einen weiteren VRR-Praxistest; sie gibt diese Funktion
 aber auch nicht als fertig oder geprüft aus. Der Nutzer übernimmt den
 VRR-Praxistest. Bisherige Labormessungen und deren Grenzen stehen im
-[Testbericht](tools/SelectiveDwm/TEST-RESULTS-20260906.md).
+[Testbericht](https://github.com/Oblivionevil/HDRCalibrate/blob/v1.6.1/tools/SelectiveDwm/TEST-RESULTS-20260906.md).
 
 ### Chromium-Browser: zeitweise wechselndes Gamma
 
