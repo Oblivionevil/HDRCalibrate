@@ -69,6 +69,14 @@ namespace HDRCalibrate.Tests
                 Run("Tray and installer arguments are parsed exactly", TestStartupArguments);
                 Run("Single-instance activation and exit signals", TestSingleInstanceSignals);
                 Run("Exit requests wait for critical operations", TestExitRequestGate);
+                Run("Program profiles use exact arguments and safe local paths", ProgramProfileTests.ArgumentsAndPaths);
+                Run("Program profiles recognize only supported browser products", ProgramProfileTests.BrowserRecognition);
+                Run("Program profile persistence is atomic and rejects duplicates", ProgramProfileTests.Persistence);
+                Run("Corrupt or future program profile stores fail closed", ProgramProfileTests.CorruptStore);
+                Run("Program launch plans preserve the executable and fixed arguments", ProgramProfileTests.LaunchPlans);
+                Run("Running and unsupported program launches are refused in both privilege modes", ProgramProfileTests.LaunchGuards);
+                Run("Elevated program launches delegate exact arguments to Explorer", ProgramProfileTests.ElevatedLaunchRouting);
+                Run("Explorer launch failures never retry through a second mechanism", ProgramProfileTests.ExplorerFailureDoesNotRetry);
 
                 Console.WriteLine($"PASS: {Passed.Count} Tests");
                 foreach (var name in Passed) Console.WriteLine("  ✓ " + name);

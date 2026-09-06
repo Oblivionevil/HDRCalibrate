@@ -1,4 +1,4 @@
-# HDR Calibrate 1.5.1
+# HDR Calibrate 1.6.1
 
 Portables WPF-Tool für Windows 11 und .NET Framework 4.8.1. Es passt bei
 aktiviertem Windows-HDR ausschließlich die von DWM zusammengesetzten
@@ -14,12 +14,66 @@ nicht verändert.
   Änderung dieser Werte ist mit dem ABI-erhaltenden Konstantenpatch nicht
   möglich.
 
-Die Korrektur betrifft nur den DWM-Pfad `SDR -> lineares scRGB`. Die nativen
-HDR-Shader und HDR-Inhalte bleiben unverändert. Independent Flip und bestimmte
+Die DWM-Korrektur betrifft nur den Pfad `SDR -> lineares scRGB`. Die nativen
+HDR-Shader und HDR-Inhalte bleiben durch diesen Patch unverändert. Independent Flip und bestimmte
 MPO-Pfade können DWM umgehen; entsprechende SDR-Inhalte erhalten dann keine
 Korrektur.
 
+## Programme: Farbraum gezielt beim Start erzwingen
+
+Über **Programme…** oben rechts öffnet sich die gespeicherte Programmliste.
+Mit **EXE hinzufügen…** lassen sich Brave, Google Chrome, Microsoft Edge und
+Chromium aufnehmen. Andere Anwendungen werden nicht als kompatibel ausgegeben.
+
+Pro Eintrag stehen drei Startprofile zur Auswahl:
+
+- **SDR / sRGB erzwingen:** setzt `--force-color-profile=srgb`. Das kann HDR-
+  und Wide-Gamut-Inhalte in dieser Anwendung einschränken. Die DWM-Korrektur
+  muss separat aktiv sein; Overlay-Pfade können sie weiterhin umgehen.
+- **scRGB / HDR-fähig festlegen:** setzt `--force-color-profile=scrgb-linear`.
+  Das kann den Farbraumwechsel vermeiden, aber die DWM-SDR-Gammakorrektur
+  greift für diese Ausgabe nicht mehr. Die Helligkeitszuordnung kann sich ändern.
+- **Standard:** startet ohne zusätzlichen Farbraum-Parameter.
+
+Nach **Profil speichern** startet **Mit gespeichertem Profil starten** die
+ausgewählte EXE. Bei einem erzwungenen Profil ist eine ausdrückliche Bestätigung
+des Hinweises erforderlich. Laufende Browser müssen vorher selbst vollständig
+beendet werden, da eine bestehende Instanz neue Startparameter ignorieren kann.
+Das Tool beendet keine fremden Prozesse. Auch wenn HDR Calibrate als
+Administrator läuft, ist der Programmstart möglich: Die App übergibt ihn an
+den Windows-Desktop/Explorer. Bei normal laufendem Explorer startet der Browser
+dadurch ebenfalls ohne Administratorrechte. Ist UAC deaktiviert und läuft auch
+der Desktop erhöht, sind diese Starts ebenfalls erlaubt; der Browser übernimmt
+dann die Rechte des Desktops. Das Tool ändert keine UAC- oder Sicherheitseinstellungen.
+Scheitert die Übergabe, wird kein zweiter Startversuch ausgelöst.
+Grundlage: [Microsofts Start über Explorer](https://devblogs.microsoft.com/oldnewthing/20131118-00/?p=2643).
+
+Die Profile gelten **nur bei einem Start aus dieser Liste**, nicht bei normalen
+Verknüpfungen, Links oder anderen Programmstarts. Es gibt keine Prozess-Hooks,
+keine systemweite Startumleitung und keinen automatischen Browserstart. Die
+Liste wird unter `%LOCALAPPDATA%\HDRCalibrate\program-profiles.xml` gespeichert;
+beschädigte Listen werden nicht stillschweigend überschrieben. DWM-Korrektur
+und Windows-Update-Sperre werden durch diese Startprofile nicht verändert.
+
+Die Kombination „beliebiges SDR-Gamma erzwingen und HDR derselben gemischten
+Browserausgabe garantiert unverändert lassen“ ist damit weiterhin nicht möglich.
+
 ## Bekannte Probleme
+
+### HotS, VRR und niedrigste Latenz: noch nicht bestätigt
+
+Die Programmliste dieses Releases unterstützt Chromium-Browser, **nicht Heroes
+of the Storm oder beliebige Spiele**. Der experimentelle Ansatz zur gezielten
+DWM-Komposition steht separat unter [tools/SelectiveDwm](tools/SelectiveDwm/README.md)
+im Quellcode. Er ist nicht mit der Gamma-Korrektur integriert und wird weder
+vom Installer noch von der portablen App automatisch geladen.
+
+Funktionierendes VRR, unveränderte HDR-Ausgabe und niedrigste Latenz bei einer
+erzwungenen HotS-Korrektur sind nicht nachgewiesen. Die Veröffentlichung von
+v1.6.1 wartet nicht auf einen weiteren VRR-Praxistest; sie gibt diese Funktion
+aber auch nicht als fertig oder geprüft aus. Der Nutzer übernimmt den
+VRR-Praxistest. Bisherige Labormessungen und deren Grenzen stehen im
+[Testbericht](tools/SelectiveDwm/TEST-RESULTS-20260906.md).
 
 ### Chromium-Browser: zeitweise wechselndes Gamma
 

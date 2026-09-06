@@ -1,7 +1,7 @@
 <Window x:Class="HDRCalibrate.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="HDR Calibrate 1.5.1 · Safe SDR Constant Patch"
+        Title="HDR Calibrate 1.6.1 · Safe SDR Constant Patch"
         Icon="/HDRCalibrate;component/Assets/HDRCalibrate.ico"
         Width="1160" Height="820" MinWidth="960" MinHeight="700"
         WindowStartupLocation="CenterScreen"
@@ -54,8 +54,21 @@
                                    FontSize="11" Margin="0,4,0,0" MaxWidth="200"
                                    TextTrimming="CharacterEllipsis" ToolTip="{Binding AutostartStatus}" />
                     </StackPanel>
-                    <Button Content="Windows HDR-Einstellungen" Command="{Binding OpenWindowsHdrCommand}"
-                            VerticalAlignment="Center" />
+                    <StackPanel VerticalAlignment="Center">
+                        <Button x:Name="HdrSettingsButton" Content="Windows HDR-Einstellungen" Command="{Binding OpenWindowsHdrCommand}" />
+                        <Button x:Name="ProgramProfilesButton" Content="Programme…" Click="OnProgramProfiles"
+                                Margin="0,6,0,0" ToolTip="Farbraum-Startprofile für ausgewählte Programme verwalten">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsBusy}" Value="True">
+                                            <Setter Property="IsEnabled" Value="False" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                    </StackPanel>
                 </StackPanel>
             </Grid>
         </Border>
@@ -332,7 +345,7 @@
                 </Ellipse>
                 <TextBlock Grid.Column="1" Text="{Binding StatusMessage}" Foreground="{StaticResource MutedBrush}"
                            TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
-                <TextBlock Grid.Column="2" Text="v1.5.1 · Windows-Update-Sperre · WPF · .NET Framework 4.8.1" Foreground="#65758B" FontSize="11" />
+                <TextBlock Grid.Column="2" Text="v1.6.1 · Programmprofile · WPF · .NET Framework 4.8.1" Foreground="#65758B" FontSize="11" />
             </Grid>
         </Border>
     </Grid>

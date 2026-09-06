@@ -25,5 +25,11 @@ namespace HDRCalibrate
             Loaded -= OnLoaded;
             await _viewModel.InitializeAsync();
         }
+
+        private void OnProgramProfiles(object sender, RoutedEventArgs e)
+        {
+            if (_viewModel.IsBusy) return;
+            new ProgramProfilesWindow { Owner = this }.ShowDialog();
+        }
     }
 }

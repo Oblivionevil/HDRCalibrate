@@ -196,8 +196,8 @@ try {
     $window.UpdateLayout()
     if ($null -eq $window.Icon) { throw 'The window icon is missing.' }
     if ($window.DataContext.IsBusy) { throw 'The screenshot would show an incomplete initialization.' }
-    $headerActions = $window.Content.Children[0].Child.Children[1]
-    $hdrSettingsButton = $headerActions.Children[1]
+    $hdrSettingsButton = $window.FindName('HdrSettingsButton')
+    if ($null -eq $hdrSettingsButton) { throw 'The Windows HDR settings button is missing.' }
     $hdrButtonBounds = $hdrSettingsButton.TransformToAncestor($window).TransformBounds(
         [Windows.Rect]::new(0, 0, $hdrSettingsButton.ActualWidth, $hdrSettingsButton.ActualHeight))
     if ($hdrButtonBounds.Left -lt 0 -or $hdrButtonBounds.Right -gt $window.ActualWidth) {
