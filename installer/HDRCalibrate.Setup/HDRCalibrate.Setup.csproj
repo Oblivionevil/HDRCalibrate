@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net481</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>HDRCalibrate.Setup</RootNamespace>
+    <AssemblyName>HDRCalibrate.Setup</AssemblyName>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+    <LangVersion>7.3</LangVersion>
+    <Deterministic>true</Deterministic>
+    <DefaultItemExcludes>$(DefaultItemExcludes);artifacts\**</DefaultItemExcludes>
+    <Version>1.7.3</Version>
+    <AssemblyVersion>1.7.3.0</AssemblyVersion>
+    <FileVersion>1.7.3.0</FileVersion>
+    <Product>HDR Calibrate</Product>
+    <AssemblyTitle>HDR Calibrate Setup</AssemblyTitle>
+    <Description>HDR Calibrate Setup</Description>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>..\..\src\HDRCalibrate\Assets\HDRCalibrate.ico</ApplicationIcon>
+    <!-- The setup is distributed as a single EXE: it must not depend on a config file. -->
+    <GenerateSupportedRuntime>false</GenerateSupportedRuntime>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System.IO.Compression" />
+  </ItemGroup>
+  <ItemGroup>
+    <Page Include="..\..\src\HDRCalibrate\Theme.xaml" Link="Theme.xaml" />
+    <Resource Include="..\..\src\HDRCalibrate\Assets\HDRCalibrate.ico" Link="Assets\HDRCalibrate.ico" />
+    <Resource Include="..\..\src\HDRCalibrate\Assets\HDRCalibrate.png" Link="Assets\HDRCalibrate.png" />
+  </ItemGroup>
+  <!-- tools/Build-Installer.ps1 supplies the verified payload. Without it the
+       setup still builds (for tests) but refuses to install anything. -->
+  <ItemGroup Condition="'$(SetupPayloadDirectory)' != ''">
+    <EmbeddedResource Include="$(SetupPayloadDirectory)\HDRCalibrate.Payload.zip"
+                      LogicalName="HDRCalibrate.Setup.Payload.zip" />
+    <EmbeddedResource Include="$(SetupPayloadDirectory)\HDRCalibrate.PayloadManifest.xml"
+                      LogicalName="HDRCalibrate.Setup.PayloadManifest.xml" />
+  </ItemGroup>
+</Project>

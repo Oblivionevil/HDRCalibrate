@@ -38,7 +38,7 @@ namespace HDRCalibrate.Dwm
                     throw new NotSupportedException(compatibility.Reason);
 
                 DwmShaderRewriter.ValidateSupportedSettings(settings);
-                diagnostics.Add("ABI-erhaltender Konstantenpatch: Originalshader bleiben vollständig erhalten; nur 16 freigegebene SHDR-Konstanten werden geändert.");
+                diagnostics.Add("ABI-erhaltender Konstantenpatch: Originalshader bleiben vollständig erhalten; nur 24 freigegebene SHDR-Konstanten werden geändert.");
                 var diskImage = File.ReadAllBytes(compatibility.DwmCorePath);
                 var modifiedImage = DwmShaderRewriter.Rewrite(diskImage, settings, out var rewriteReport);
                 var patchPlanFingerprint = rewriteReport.ModifiedRanges.Count == 0

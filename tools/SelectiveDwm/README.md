@@ -1,17 +1,27 @@
 # Selective SDR composition experiment
 
-Status: **experimental research sources, not an enabled application feature or
-ready-to-run HotS release package**.
+Status: **experimental DWM-only selection backend**, integrated with the
+application's active gamma approval and manual program list in 1.7.0.
+It is not accepted as a visually correct HotS gamma/VRR/lowest-latency solution.
 V3 recognizes the owned SDR fixture and already-running Heroes of the Storm.
 Bounded live candidate vetoes now run and expire after five seconds; separate
 PQ and scRGB requests are correctly refused. This is **not** proof of the full
 feature: after the authorized DWM restart the baseline already lacked active
 VRR status, and baseline/recovery PresentMon display tracking is inconclusive.
-Gamma is not integrated, and the VRR/latency/recovery acceptance gates remain
-unmet. Do not enable this prototype as a normal application feature.
+The new managed integration supplies the existing confirmed global gamma
+correction; the DLL itself does not implement a gamma transform. The integrated
+visual/VRR/latency acceptance gates remain unmet. Saved program entries never
+enable the experimental path automatically.
 
 See [the test record](TEST-RESULTS-20260906.md), [native contract](Hook/README.md),
 and [isolated SDR/HDR fixture](Fixture/README.md).
+
+An isolated **26100.9278 build candidate** is now available through the explicit
+`-DwmCoreBuild 26100.9278` build option. Default builds and the installed managed
+allowlist remain on 8875. The candidate requires fresh output paths below
+`artifacts/native-9278-candidate-<name>`; it does not enable automatic activation
+after an OS update. See the [candidate test record](TEST-NATIVE-CANDIDATE-26100.9278.md)
+for the verified offline scope and the remaining live acceptance gates.
 
 ## Safety boundary
 
@@ -43,9 +53,10 @@ compiling its library. It does **not** build or launch the hook DLL. The hook an
 fixture each have their own build script. Use distinct output directories for
 already-running binaries; do not stop user applications to unlock a build.
 
-These sources are separate from the v1.6.1 installer/portable application.
-Build prerequisites and local test artifacts are not included in those
-packages. In particular, `artifacts/deps/minhook-v1.3.4` must be a clean checkout
+These sources were separate from the v1.6.1 installer/portable application.
+The 1.7.0 app build uses `../Build-ProgramGammaNative.ps1` to create a versioned,
+hash-bound native payload; test tools and local artifacts are not runtime
+dependencies. In particular, `artifacts/deps/minhook-v1.3.4` must be a clean checkout
 of MinHook commit `c3fcafdc10146beb5919319d0683e44e3c30d537`.
 `BuildHook.ps1` needs both that source directory and the matching built library;
 pass `-MinHookLibrary` explicitly when using a separate controller output.
@@ -73,15 +84,26 @@ The newer controller accepts an optional **paired**
 process generation is rejected with exit 21 before any remote allocation,
 write or call. A metadata/liveness handle pins the checked generation and its
 creation time is checked again on the eventual remote-operation handle. This
-is required for a future combined gamma/selection workflow: the hook must join
+is required by the combined gamma/selection workflow: the hook must join
 the exact DWM generation returned by successful gamma application, not whatever
 process happens to be current later. Native FILETIME differs from .NET UTC
 DateTime ticks; use an explicit UTC `DateTime.ToFileTimeUtc()` conversion.
 `--validate-only` parses/prints request fields without opening processes or
 loading/inspecting a DLL. Paired identity binding does not itself enable gamma,
 prove VRR or authorize a compositor restart. The historical live runners still
-use their frozen v3 controller; the new controller is built separately under
-`controller-generation-bound/bin` until a combined live test is coordinated.
+use their frozen v3 controller; do not replace their pinned binaries or hashes.
+
+The managed mode additionally requires paired exact target EXE/creation time
+and owner PID/creation time, plus an authenticated local duplex named pipe.
+It performs no remote write before GO (byte 3). Heartbeats (byte 1) are required
+within 1.5 seconds; STOP (byte 2), pipe/owner loss, an expired lease or a proven
+source change withdraws the selection. `--continuous` renews the **same**
+session's <=5-second lease, never a replacement window/process/DWM generation.
+Three matching observations and the existing SDR-only guards still apply.
+No automatic surface relearning, competing hook load or DWM restart occurs.
+The application requires a successful exact 5-second selection test before
+continuous activation; optical gamma and VRR are explicitly not inferred from
+cumulative veto counters. See the main [program-list instructions](../../README.md).
 
 `Hook/InspectSurface.ps1` is a separate, bounded read-only diagnostic: exact DWM
 PID/creation time/system path/core hash; at most 32 reads and 4 KiB; stops at

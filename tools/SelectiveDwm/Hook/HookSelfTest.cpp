@@ -1,10 +1,13 @@
 // A separate, ordinary console process. This never loads dwmcore, attaches to a
 // game, or changes the desktop. Only these two synthetic host functions are
-// detoured. Synthetic observations test the production dispatch/policy; they do
+// detoured. Reader tests own one invisible message-only host window and local
+// fixture memory; they never inspect or control an existing application's UI.
+// Synthetic observations test the production dispatch/policy; they do
 // not substitute for live DWM ownership, image, HDR, VRR, or latency evidence.
 #define SELECTIVE_DWM_SELF_TEST
 #include "SelectiveDwmHook.cpp"
 #include <cstdio>
+#include <initializer_list>
 
 namespace {
 
@@ -188,6 +191,292 @@ void PixelFormatReaderTests() {
     HeapFree(GetProcessHeap(), 0, image);
 }
 
+template<typename T>
+void ReaderField(std::uint8_t* bytes, std::size_t offset, T value) {
+    std::memcpy(bytes + offset, &value, sizeof(value));
+}
+
+bool ReaderCode(std::uint8_t* image, std::uint32_t rva, const std::uint8_t* bytes, std::size_t length) {
+    std::memcpy(image + rva, bytes, length);
+    DWORD previous = 0;
+    return VirtualProtect(image + rva, length, PAGE_EXECUTE_READ, &previous) != FALSE;
+}
+
+bool CompleteReaderSdr(const Sample& sample) {
+    constexpr auto required = OwnershipVerified | HasBindInfo | HasPixelFormat;
+    return sample.decision != Decision::ReadFault && (sample.flags & required) == required &&
+        sample.bind != 0 && IsVerifiedSdrFormat(sample.colorSpace, sample.pixelFormat);
+}
+
+void DirectObjectReaderTests() {
+    // The allocated image is test-owned, not dwmcore. Only the two recognized
+    // Node leaf getters and the CResource PID leaf execute their exact contract
+    // bytes. The base-visual HWND path uses an explicitly verified local stub
+    // with the Node HWND leaf; it does NOT exercise private sparse properties.
+    constexpr std::size_t imageBytes = 0x440000;
+    auto* image = static_cast<std::uint8_t*>(VirtualAlloc(nullptr, imageBytes,
+        MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+    Check("direct-reader-own-fixture-allocation", image != nullptr);
+    if (!image) return;
+    auto* savedBase = g_dwmcore;
+    const auto savedSize = g_imageSize;
+    const auto savedSynthetic = g_testSyntheticSample;
+    g_dwmcore = image;
+    g_imageSize = imageBytes;
+    g_testSyntheticSample = false;
+    HWND window = CreateWindowExW(0, L"STATIC", L"HDRCalibrate reader host test", 0,
+        0, 0, 0, 0, HWND_MESSAGE, nullptr, GetModuleHandleW(nullptr), nullptr);
+    const auto cleanup = [&]() {
+        if (window) DestroyWindow(window);
+        g_dwmcore = savedBase;
+        g_imageSize = savedSize;
+        g_testSyntheticSample = savedSynthetic;
+        VirtualFree(image, 0, MEM_RELEASE);
+    };
+    DWORD windowPid = 0;
+    Check("direct-reader-message-only-window-is-owned-and-invisible", window && !IsWindowVisible(window) &&
+        GetWindowThreadProcessId(window, &windowPid) && windowPid == GetCurrentProcessId());
+    if (!window) { cleanup(); return; }
+    const bool codeReady =
+        ReaderCode(image, contract::kNodeGetHwndRva, contract::kNodeGetHwnd, sizeof(contract::kNodeGetHwnd)) &&
+        ReaderCode(image, contract::kNodeGetPidRva, contract::kNodeGetPid, sizeof(contract::kNodeGetPid)) &&
+        ReaderCode(image, contract::kVisualGetPidRva, contract::kVisualGetPid, sizeof(contract::kVisualGetPid)) &&
+        ReaderCode(image, contract::kVisualGetHwndRva, contract::kNodeGetHwnd, sizeof(contract::kNodeGetHwnd)) &&
+        FlushInstructionCache(GetCurrentProcess(), image, imageBytes);
+    Check("direct-reader-own-RX-getters-match-verified-test-bytes", codeReady &&
+        CodeEquals(image, imageBytes, contract::kNodeGetHwndRva, contract::kNodeGetHwnd, sizeof(contract::kNodeGetHwnd)) &&
+        CodeEquals(image, imageBytes, contract::kNodeGetPidRva, contract::kNodeGetPid, sizeof(contract::kNodeGetPid)) &&
+        CodeEquals(image, imageBytes, contract::kVisualGetPidRva, contract::kVisualGetPid, sizeof(contract::kVisualGetPid)) &&
+        CodeEquals(image, imageBytes, contract::kVisualGetHwndRva, contract::kNodeGetHwnd, sizeof(contract::kNodeGetHwnd)));
+    if (!codeReady) { cleanup(); return; }
+    Check("direct-reader-tests-do-not-use-synthetic-sample-shortcut", !g_testSyntheticSample);
+
+    alignas(8) std::uint8_t visual[0x380]{};
+    alignas(8) std::uint8_t owner[0x100]{};
+    alignas(8) std::uint8_t resource[0x40]{};
+    alignas(8) std::uint8_t surface[0xE0]{};
+    alignas(8) std::uint8_t realization[0x80]{};
+    alignas(8) std::uint8_t backing[0x180]{};
+    alignas(8) std::uint8_t plane[0x90]{};
+    auto* sourceTable = reinterpret_cast<void**>(image + 0x1000);
+    auto* nodeTable = reinterpret_cast<void**>(image + 0x2000);
+    auto* baseTable = reinterpret_cast<void**>(image + 0x3000);
+    auto* surfaceTable = reinterpret_cast<void**>(image + contract::kGlobalCompositionSurfaceVtableRva);
+    auto* formatTable = reinterpret_cast<void**>(image + contract::kSurfacePixelFormatVtableRva);
+    sourceTable[3] = image + contract::kRealizationPixelFormatThunkRva;
+    nodeTable[0x130 / 8] = image + contract::kNodeGetHwndRva;
+    nodeTable[0x90 / 8] = image + contract::kNodeGetPidRva;
+    baseTable[0x130 / 8] = image + contract::kVisualGetHwndRva;
+    baseTable[0x90 / 8] = image + contract::kVisualGetPidRva;
+    surfaceTable[0x38 / 8] = image + contract::kSurfaceGetRealizationRva;
+    surfaceTable[0x40 / 8] = image + contract::kSurfaceGetBindRva;
+    formatTable[3] = image + contract::kSurfacePixelFormatGetterRva;
+    ReaderField(visual, 0, nodeTable);
+    ReaderField(visual, 0x320, window);
+    ReaderField(visual, 0x338, owner);
+    ReaderField(owner, 0x80, GetCurrentProcessId());
+    ReaderField(visual, 0x38, resource);
+    ReaderField(resource, 0x18, std::uint32_t{2});
+    ReaderField(resource, 0x1C, GetCurrentProcessId());
+    ReaderField(surface, 0, surfaceTable);
+    ReaderField(surface, 0xD0, realization);
+    constexpr std::uint64_t bind = 0x1122334455667788ULL;
+    ReaderField(surface, 0x88, bind);
+    ReaderField(realization, 8, sourceTable);
+    ReaderField(realization, 0x30, backing);
+    ReaderField(backing, 0x50, formatTable);
+    ReaderField(backing, 0x50 + 0x24, std::uint32_t{87});
+    ReaderField(backing, 0x50 + 0x44, std::uint32_t{0});
+    ReaderField(plane, 8, visual);
+    ReaderField(plane, 0x10, surface);
+    ReaderField(plane, 0x18, bind);
+    ReaderField(plane, 0x6C, std::uint32_t{0});
+
+    Sample sample{};
+    Check("current-surface-reads-unadjusted-native-realization-and-bind", ReadCurrentSurface(surface, realization, &sample) &&
+        sample.realization == reinterpret_cast<std::uint64_t>(realization) && sample.bind == bind && (sample.flags & HasBindInfo));
+    sample = {}; sample.bind = bind;
+    Check("current-surface-matching-existing-bind-is-accepted", ReadCurrentSurface(surface, realization, &sample) && (sample.flags & HasBindInfo));
+    sample = {};
+    Check("current-surface-discovery-without-expected-realization-is-accepted", ReadCurrentSurface(surface, nullptr, &sample) &&
+        sample.realization == reinterpret_cast<std::uint64_t>(realization));
+    sample = {};
+    Check("current-surface-rejects-adjusted-plus8-expected-interface", !ReadCurrentSurface(surface, realization + 8, &sample) && !(sample.flags & HasBindInfo));
+    ReaderField(surface, 0xD0, realization + 8);
+    sample = {};
+    Check("current-surface-rejects-adjusted-plus8-stored-interface", !ReadCurrentSurface(surface, realization, &sample) && !(sample.flags & HasBindInfo));
+    ReaderField(surface, 0xD0, static_cast<void*>(nullptr));
+    sample = {};
+    Check("current-surface-null-realization-is-not-evidence", !ReadCurrentSurface(surface, nullptr, &sample) && !(sample.flags & HasBindInfo));
+    ReaderField(surface, 0xD0, realization);
+    ReaderField(surface, 0x88, std::uint64_t{0});
+    sample = {};
+    Check("current-surface-zero-bind-is-not-evidence", !ReadCurrentSurface(surface, realization, &sample) && !(sample.flags & HasBindInfo));
+    ReaderField(surface, 0x88, bind);
+    sample = {}; sample.bind = bind + 1;
+    Check("current-surface-changed-bind-rejected-without-overwriting-input", !ReadCurrentSurface(surface, realization, &sample) &&
+        sample.bind == bind + 1 && !(sample.flags & HasBindInfo));
+    ReaderField(surface, 0, surfaceTable + 1);
+    sample = {};
+    Check("current-surface-unknown-vtable-rejected", !ReadCurrentSurface(surface, realization, &sample) && !(sample.flags & HasBindInfo));
+    ReaderField(surface, 0, surfaceTable);
+    surfaceTable[0x38 / 8] = image + contract::kSurfaceGetRealizationRva + 1;
+    sample = {};
+    Check("current-surface-wrong-realization-getter-rejected", !ReadCurrentSurface(surface, realization, &sample) && !(sample.flags & HasBindInfo));
+    surfaceTable[0x38 / 8] = image + contract::kSurfaceGetRealizationRva;
+    surfaceTable[0x40 / 8] = image + contract::kSurfaceGetBindRva + 1;
+    sample = {};
+    Check("current-surface-wrong-bind-getter-rejected", !ReadCurrentSurface(surface, realization, &sample) && !(sample.flags & HasBindInfo));
+    surfaceTable[0x40 / 8] = image + contract::kSurfaceGetBindRva;
+    sample = {};
+    Check("current-surface-null-input-rejected", !ReadCurrentSurface(nullptr, realization, &sample));
+    sample = {};
+    Check("current-surface-invalid-input-produces-ReadFault", !ReadCurrentSurface(reinterpret_cast<void*>(1), realization, &sample) &&
+        sample.decision == Decision::ReadFault && !(sample.flags & HasBindInfo));
+
+    sample = {};
+    Check("visual-node-real-leaves-verify-own-window-PID", ReadVisualIdentity(visual, &sample) &&
+        sample.hwnd == reinterpret_cast<std::uint64_t>(window) && sample.ownerPid == GetCurrentProcessId() &&
+        (sample.flags & (OwnershipVerified | HasWindowNodeIdentity)) == (OwnershipVerified | HasWindowNodeIdentity) &&
+        !(sample.flags & HasTopLevelProperty));
+    ReaderField(visual, 0, baseTable);
+    sample = {};
+    Check("visual-base-tested-HWND-stub-and-real-PID-leaf-verify-identity", ReadVisualIdentity(visual, &sample) &&
+        sample.topLevelProperty == reinterpret_cast<std::uint64_t>(window) &&
+        (sample.flags & (OwnershipVerified | HasTopLevelProperty)) == (OwnershipVerified | HasTopLevelProperty) &&
+        !(sample.flags & HasWindowNodeIdentity));
+    ReaderField(resource, 0x18, std::uint32_t{1});
+    sample = {};
+    Check("visual-base-resource-type-without-PID-rejected", !ReadVisualIdentity(visual, &sample) && !(sample.flags & OwnershipVerified));
+    ReaderField(resource, 0x18, std::uint32_t{2});
+    ReaderField(visual, 0, nodeTable);
+    ReaderField(owner, 0x80, GetCurrentProcessId() + 1);
+    sample = {};
+    Check("visual-native-PID-mismatch-with-own-window-rejected", !ReadVisualIdentity(visual, &sample) && !(sample.flags & OwnershipVerified));
+    ReaderField(owner, 0x80, DWORD{0});
+    sample = {};
+    Check("visual-zero-native-PID-rejected", !ReadVisualIdentity(visual, &sample) && !(sample.flags & OwnershipVerified));
+    ReaderField(owner, 0x80, GetCurrentProcessId());
+    ReaderField(visual, 0x320, static_cast<HWND>(nullptr));
+    sample = {};
+    Check("visual-zero-HWND-rejected", !ReadVisualIdentity(visual, &sample) && !(sample.flags & OwnershipVerified));
+    ReaderField(visual, 0x320, window);
+    nodeTable[0x90 / 8] = image + contract::kVisualGetPidRva;
+    sample = {};
+    Check("visual-mixed-node-and-base-getter-pair-rejected", !ReadVisualIdentity(visual, &sample) && !(sample.flags & OwnershipVerified));
+    nodeTable[0x90 / 8] = image + contract::kNodeGetPidRva;
+    nodeTable[0x130 / 8] = image + contract::kNodeGetHwndRva + 1;
+    sample = {};
+    Check("visual-unknown-HWND-getter-rejected-before-call", !ReadVisualIdentity(visual, &sample) && !(sample.flags & OwnershipVerified));
+    nodeTable[0x130 / 8] = image + contract::kNodeGetHwndRva;
+    ReaderField(visual, 0, reinterpret_cast<void**>(image + imageBytes - 0x130));
+    sample = {};
+    Check("visual-truncated-in-image-vtable-rejected-before-slot-read", !ReadVisualIdentity(visual, &sample) && !(sample.flags & OwnershipVerified));
+    ReaderField(visual, 0, reinterpret_cast<void**>(owner));
+    sample = {};
+    Check("visual-out-of-image-vtable-rejected", !ReadVisualIdentity(visual, &sample) && !(sample.flags & OwnershipVerified));
+    ReaderField(visual, 0, nodeTable);
+    ReaderField(visual, 0x338, reinterpret_cast<void*>(1));
+    sample = {};
+    Check("visual-real-PID-leaf-invalid-owner-produces-ReadFault", !ReadVisualIdentity(visual, &sample) &&
+        sample.decision == Decision::ReadFault && !(sample.flags & OwnershipVerified));
+    ReaderField(visual, 0x338, owner);
+    sample = {};
+    Check("visual-null-input-rejected", !ReadVisualIdentity(nullptr, &sample));
+    sample = {};
+    Check("visual-invalid-input-produces-ReadFault", !ReadVisualIdentity(reinterpret_cast<void*>(1), &sample) &&
+        sample.decision == Decision::ReadFault);
+
+    SharedState shared{};
+    Session session{};
+    session.shared = &shared;
+    const auto readPlane = [&]() {
+        sample = {};
+        sample.point = HookPoint::IndependentFlip;
+        sample.qpc = Qpc();
+        return ReadPlane(&session, plane, &sample);
+    };
+    Check("plane-direct-read-verifies-owned-SDR-current-bind-and-native-realization", readPlane() && CompleteReaderSdr(sample) &&
+        sample.visual == reinterpret_cast<std::uint64_t>(visual) && sample.surface == reinterpret_cast<std::uint64_t>(surface) &&
+        sample.realization == reinterpret_cast<std::uint64_t>(realization) && sample.bind == bind &&
+        shared.telemetry.latest.stage == Stage::WindowIdentity);
+    Request request{};
+    request.mode = Mode::CandidateVeto;
+    request.targetPid = GetCurrentProcessId();
+    request.targetHwnd = reinterpret_cast<std::uint64_t>(window);
+    request.expectedVisual = reinterpret_cast<std::uint64_t>(visual);
+    request.expectedSurface = reinterpret_cast<std::uint64_t>(surface);
+    request.expectedBind = bind;
+    Check("plane-complete-SDR-never-enables-independent-flip-demotion", EvaluateCandidate(request, sample, true, kCapabilities) == Decision::CapabilityUnavailable);
+    for (const auto color : {std::uint32_t{12}, std::uint32_t{1}, kUnknownColorSpace}) {
+        ReaderField(plane, 0x6C, color);
+        ReaderField(backing, 0x50 + 0x44, color);
+        ReaderField(backing, 0x50 + 0x24, color == 1 ? std::uint32_t{10} : std::uint32_t{87});
+        Check("plane-PQ-scRGB-or-unknown-metadata-never-classified-SDR", readPlane() && !CompleteReaderSdr(sample) &&
+            sample.colorSpace == color && EvaluateCandidate(request, sample, true, kCapabilities) == Decision::NotVerifiedSdr);
+    }
+    ReaderField(plane, 0x6C, std::uint32_t{0});
+    ReaderField(backing, 0x50 + 0x24, std::uint32_t{87});
+    ReaderField(backing, 0x50 + 0x44, std::uint32_t{12});
+    Check("plane-SDR-versus-PQ-backing-clears-both-metadata-proofs", readPlane() && !CompleteReaderSdr(sample) &&
+        !(sample.flags & (HasPixelFormat | HasBindInfo)));
+    ReaderField(plane, 0x6C, std::uint32_t{12});
+    ReaderField(backing, 0x50 + 0x44, std::uint32_t{0});
+    Check("plane-PQ-versus-SDR-backing-clears-both-metadata-proofs", readPlane() && !CompleteReaderSdr(sample) &&
+        !(sample.flags & (HasPixelFormat | HasBindInfo)));
+    ReaderField(plane, 0x6C, std::uint32_t{0});
+    ReaderField(plane, 0x18, bind + 1);
+    Check("plane-changed-bind-does-not-acquire-current-surface-proof", readPlane() && !CompleteReaderSdr(sample) &&
+        sample.bind == bind + 1 && !(sample.flags & HasBindInfo));
+    ReaderField(plane, 0x18, std::uint64_t{0});
+    const bool zeroPlaneRead = readPlane();
+    std::printf("INFO zero-plane-bind read=%s resulting_bind=%llu flags=%u pixel_format=%u color_space=%u complete_SDR=%s\n",
+        zeroPlaneRead ? "true" : "false", static_cast<unsigned long long>(sample.bind), sample.flags,
+        sample.pixelFormat, sample.colorSpace, CompleteReaderSdr(sample) ? "true" : "false");
+    Check("plane-missing-bind-does-not-acquire-current-surface-proof", !CompleteReaderSdr(sample) &&
+        !(sample.flags & HasBindInfo) && (!zeroPlaneRead || sample.bind == 0));
+    ReaderField(plane, 0x18, bind);
+    ReaderField(surface, 0x88, std::uint64_t{0});
+    Check("plane-current-surface-zero-bind-never-classified-SDR", readPlane() && !CompleteReaderSdr(sample) && !(sample.flags & HasBindInfo));
+    ReaderField(surface, 0x88, bind);
+    ReaderField(surface, 0xD0, realization + 8);
+    Check("plane-adjusted-plus8-realization-cannot-pass-pixel-reader", readPlane() && !CompleteReaderSdr(sample) && !(sample.flags & HasPixelFormat));
+    ReaderField(surface, 0xD0, realization);
+    surfaceTable[0x40 / 8] = image + contract::kSurfaceGetBindRva + 1;
+    Check("plane-wrong-current-bind-getter-never-classified-SDR", readPlane() && !CompleteReaderSdr(sample) && !(sample.flags & HasBindInfo));
+    surfaceTable[0x40 / 8] = image + contract::kSurfaceGetBindRva;
+    ReaderField(surface, 0, surfaceTable + 1);
+    Check("plane-unknown-surface-vtable-rejected-before-readers", !readPlane() && !CompleteReaderSdr(sample));
+    ReaderField(surface, 0, surfaceTable);
+    ReaderField(plane, 0x10, static_cast<void*>(nullptr));
+    Check("plane-null-surface-rejected", !readPlane() && !CompleteReaderSdr(sample));
+    ReaderField(plane, 0x10, reinterpret_cast<void*>(1));
+    Check("plane-invalid-surface-produces-ReadFault", !readPlane() && sample.decision == Decision::ReadFault && !CompleteReaderSdr(sample));
+    ReaderField(plane, 0x10, surface);
+    ReaderField(realization, 0x30, reinterpret_cast<void*>(1));
+    Check("plane-invalid-backing-retains-ReadFault-despite-valid-window", readPlane() && sample.decision == Decision::ReadFault &&
+        !CompleteReaderSdr(sample) && !(sample.flags & HasPixelFormat));
+    ReaderField(realization, 0x30, backing);
+    ReaderField(plane, 8, reinterpret_cast<void*>(1));
+    Check("plane-invalid-visual-produces-ReadFault-without-ownership", !readPlane() && sample.decision == Decision::ReadFault &&
+        !CompleteReaderSdr(sample) && !(sample.flags & OwnershipVerified));
+    ReaderField(plane, 8, visual);
+    sample = {};
+    Check("plane-null-input-rejected", !ReadPlane(&session, nullptr, &sample));
+    sample = {};
+    Check("plane-invalid-input-produces-ReadFault", !ReadPlane(&session, reinterpret_cast<void*>(1), &sample) &&
+        sample.decision == Decision::ReadFault);
+    Check("plane-healthy-fixture-restored-after-negative-paths", readPlane() && CompleteReaderSdr(sample));
+    const auto destroyed = DestroyWindow(window);
+    if (destroyed) window = nullptr;
+    sample = {};
+    Check("visual-destroyed-owned-window-cannot-reuse-cached-identity", destroyed && !ReadVisualIdentity(visual, &sample) &&
+        !(sample.flags & OwnershipVerified));
+    cleanup();
+}
+
+#include "MappedContractTests.inl"
+
 } // namespace
 
 int main() {
@@ -236,6 +525,9 @@ int main() {
         VerifyProcess(limitedHandle, GetCurrentProcessId() + 1, FileTimeValue(processStart)) == ERROR_INVALID_OWNER);
     if (limitedHandle) CloseHandle(limitedHandle);
     PixelFormatReaderTests();
+    DirectObjectReaderTests();
+    MappedContractTests();
+    NativeProloguePreparationTests();
 
     const bool initialized = MH_Initialize() == MH_OK;
     const bool candidateCreated = initialized && MH_CreateHook(reinterpret_cast<void*>(&NativeCandidate),

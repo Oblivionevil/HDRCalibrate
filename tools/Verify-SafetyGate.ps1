@@ -57,8 +57,8 @@ $result = [pscustomobject]@{
 $result | ConvertTo-Json
 
 if (-not $result.Success -or -not $result.LivePatchEnabled -or
-    -not $result.TimedTestAvailable -or $result.PatchedShaderCount -ne 4 -or
-    $result.PatchedConstantVectorCount -ne 16 -or $result.ChangedByteCount -ge 512 -or
+    -not $result.TimedTestAvailable -or $result.PatchedShaderCount -ne 6 -or
+    $result.PatchedConstantVectorCount -ne 24 -or $result.ChangedByteCount -ge 512 -or
     -not $result.DwmUnchanged) {
     throw 'Die fail-closed DWM-Freigabeprüfung ist fehlgeschlagen.'
 }

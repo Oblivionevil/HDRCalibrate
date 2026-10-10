@@ -50,8 +50,8 @@ namespace HDRCalibrate.Dwm
 
     public static class DwmCoreInspector
     {
-        public const string SupportedDwmCoreVersion = "10.0.26100.8875 (WinBuild.160101.0800)";
-        public const string SupportedDwmCoreSha256 = "825726F26BD6B5A02B49F6145963B54D537D3D1239055DDA28D1FB0B3E864EF3";
+        public const string SupportedDwmCoreVersion = "10.0.26100.9278 (WinBuild.160101.0800)";
+        public const string SupportedDwmCoreSha256 = "40579ECFA394395677FEC84014C32BA5495F334B6D96C5653FD5CAA129DC1222";
 
         private static readonly string[] NativeChunks = { "RDEF", "LFS0", "SHDR", "STAT" };
         private static readonly string[] DownlevelChunks = { "Aon9", "SHDR", "STAT", "RDEF", "LFS0" };
@@ -59,23 +59,23 @@ namespace HDRCalibrate.Dwm
         internal static readonly DwmTargetShader[] AllSdrShaders =
         {
             NewShader("4CDE30EDFF9BEE225DA9465FDF59CD84", D3DCompiler.AlphaFunctionName,
-                DwmShaderProfile.Level10_0, DwmShaderKind.Alpha, false,
-                "CA9E43FD4AE1299B99BAAC5751EDD17F", 115, 10, 1024, NativeChunks),
+                DwmShaderProfile.Level10_0, DwmShaderKind.Alpha, true,
+                "3191B088A09F9D27061FD85EAB64C6EB", 133, 16, 1024, NativeChunks),
             NewShader("7042A5DE5C816B2D89D14AD3CCD76569", D3DCompiler.OpaqueFunctionName,
-                DwmShaderProfile.Level10_0, DwmShaderKind.Opaque, false,
-                "CA9E43FD4AE1299B99BAAC5751EDD17F", 115, 11, 896, NativeChunks),
+                DwmShaderProfile.Level10_0, DwmShaderKind.Opaque, true,
+                "3191B088A09F9D27061FD85EAB64C6EB", 133, 17, 896, NativeChunks),
             NewShader("96E6D1589255ECCD1DD7D4DBEC54D285", D3DCompiler.AlphaFunctionName,
                 DwmShaderProfile.Level9_3, DwmShaderKind.Alpha, true,
-                "C0E76587B379EC9A5CFCE9CAAC0ACCE1", 115, 10, 1412, DownlevelChunks),
+                "97A90639688B740B67F6A6E5F978E579", 133, 16, 1412, DownlevelChunks),
             NewShader("2126B037C1A2FBDDE355B6E6DD9CAF3C", D3DCompiler.OpaqueFunctionName,
                 DwmShaderProfile.Level9_3, DwmShaderKind.Opaque, true,
-                "C0E76587B379EC9A5CFCE9CAAC0ACCE1", 115, 11, 1220, DownlevelChunks),
+                "97A90639688B740B67F6A6E5F978E579", 133, 17, 1220, DownlevelChunks),
             NewShader("2C8926FFE229F05D967C72668DC3ADDB", D3DCompiler.AlphaFunctionName,
                 DwmShaderProfile.Level9_1, DwmShaderKind.Alpha, true,
-                "6BA40A153D1849B95646813137B7E11C", 83, 10, 1424, DownlevelChunks),
+                "586540FE8C6E9F947BECAA1F60DF7B92", 101, 16, 1424, DownlevelChunks),
             NewShader("F693BFBBAF24B3D9366354BE8898A7F5", D3DCompiler.OpaqueFunctionName,
                 DwmShaderProfile.Level9_1, DwmShaderKind.Opaque, true,
-                "6BA40A153D1849B95646813137B7E11C", 83, 11, 1220, DownlevelChunks)
+                "586540FE8C6E9F947BECAA1F60DF7B92", 101, 17, 1220, DownlevelChunks)
         };
 
         internal static readonly DwmTargetShader[] Targets =
@@ -117,7 +117,7 @@ namespace HDRCalibrate.Dwm
                 result.ValidatedParentLibraryCount = validation.Parents.Count;
                 result.IsCompatible = validation.Shaders.Count == AllSdrShaders.Length && validation.Parents.Count == 3;
                 result.Reason = result.IsCompatible
-                    ? "Alle sechs DWM-SDR→scRGB-Exporte in drei Profilbibliotheken wurden per Hash, Struktur und D3D-Reflection validiert; nur die vier 9.1/9.3-Exporte sind Patchziele."
+                    ? "Alle sechs DWM-SDR→scRGB-Exporte (FL9.1, FL9.3 und FL10) in drei Profilbibliotheken wurden per Hash, Struktur und D3D-Reflection als Patchziele validiert."
                     : "Das erwartete DWM-SDR-Shadermanifest ist unvollständig.";
             }
             catch (Exception ex)

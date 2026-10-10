@@ -12,17 +12,39 @@
     <LangVersion>7.3</LangVersion>
     <Deterministic>true</Deterministic>
     <DefaultItemExcludes>$(DefaultItemExcludes);artifacts\**</DefaultItemExcludes>
-    <Version>1.6.1</Version>
-    <AssemblyVersion>1.6.1.0</AssemblyVersion>
-    <FileVersion>1.6.1.0</FileVersion>
+    <Version>1.7.3</Version>
+    <AssemblyVersion>1.7.3.0</AssemblyVersion>
+    <FileVersion>1.7.3.0</FileVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\HDRCalibrate.ico</ApplicationIcon>
+    <ProgramGammaNativeDirectory>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\..\artifacts\program-gamma-native\$(Version)'))</ProgramGammaNativeDirectory>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="System.Runtime.Serialization" />
     <ProjectReference Include="..\HDRCalibrate.Dwm\HDRCalibrate.Dwm.csproj" />
     <ProjectReference Include="..\HDRCalibrate.DwmHelper\HDRCalibrate.DwmHelper.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
+  <ItemGroup Condition="'$(MSBuildProjectName)' == 'HDRCalibrate' and '$(DesignTimeBuild)' != 'true'">
+    <EmbeddedResource Include="$(ProgramGammaNativeDirectory)\ProgramGammaNativeManifest.xml"
+                      LogicalName="HDRCalibrate.ProgramGammaNativeManifest.xml" />
+    <Content Include="$(ProgramGammaNativeDirectory)\HDRCalibrate.SelectiveController.exe"
+             Link="Native\$(Version)\HDRCalibrate.SelectiveController.exe"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="$(ProgramGammaNativeDirectory)\HDRCalibrate.SelectiveDwmHook.dll"
+             Link="Native\$(Version)\HDRCalibrate.SelectiveDwmHook.dll"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="$(ProgramGammaNativeDirectory)\MinHook-LICENSE.txt"
+             Link="Native\$(Version)\MinHook-LICENSE.txt"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <!-- PrepareForBuild precedes WPF resource generation and compilation. The
+       temporary WPF project and design-time evaluation must never rebuild C++. -->
+  <Target Name="BuildProgramGammaNative" BeforeTargets="PrepareForBuild"
+          Condition="'$(MSBuildProjectName)' == 'HDRCalibrate' and '$(DesignTimeBuild)' != 'true' and '$(IsCrossTargetingBuild)' != 'true'">
+    <Exec Command="&quot;$(SystemRoot)\System32\WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\..\tools\Build-ProgramGammaNative.ps1&quot; -Version &quot;$(Version)&quot;" />
+    <Error Condition="!Exists('$(ProgramGammaNativeDirectory)\ProgramGammaNativeManifest.xml')"
+           Text="The verified native gamma manifest was not generated." />
+  </Target>
   <ItemGroup>
     <None Remove="Assets\HDRCalibrate.ico" />
     <None Remove="Assets\HDRCalibrate.png" />

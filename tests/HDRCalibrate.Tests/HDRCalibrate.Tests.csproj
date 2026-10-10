@@ -10,7 +10,13 @@
     <DefaultItemExcludes>$(DefaultItemExcludes);artifacts\**</DefaultItemExcludes>
   </PropertyGroup>
   <ItemGroup>
+    <Reference Include="PresentationCore" />
+    <Reference Include="PresentationFramework" />
+    <Reference Include="WindowsBase" />
+    <Reference Include="System.Xaml" />
     <ProjectReference Include="..\..\src\HDRCalibrate\HDRCalibrate.csproj" />
     <ProjectReference Include="..\..\src\HDRCalibrate.Dwm\HDRCalibrate.Dwm.csproj" />
+    <ProjectReference Include="..\..\installer\HDRCalibrate.Setup\HDRCalibrate.Setup.csproj" />
+    <Reference Include="System.IO.Compression" />
   </ItemGroup>
 </Project>

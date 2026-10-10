@@ -8,12 +8,12 @@
 #include <vector>
 #include <sstream>
 #include <iomanip>
+#include "../Hook/BuildContract.h"
 
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "bcrypt.lib")
 
 namespace {
-constexpr wchar_t ExpectedDwmHash[] = L"825726F26BD6B5A02B49F6145963B54D537D3D1239055DDA28D1FB0B3E864EF3";
 struct Handle {
     HANDLE value = nullptr;
     explicit Handle(HANDLE v = nullptr) : value(v) {}
@@ -82,7 +82,7 @@ int RunSelectivePreflight() {
     const std::wstring expectedImage = std::wstring(systemPath) + L"\\dwm.exe";
     const std::wstring corePath = std::wstring(systemPath) + L"\\dwmcore.dll";
     const auto hash = FileHash(corePath);
-    const bool hashAllowed = hash == ExpectedDwmHash;
+    const bool hashAllowed = hash == selective_dwm::contract::kDwmcoreSha256Hex;
     std::wprintf(L"{\"event\":\"binary\",\"dwmcore_sha256\":\"%ls\",\"allowlisted\":%ls,\"debug_privilege\":%ls}\n",
         hash.c_str(), hashAllowed ? L"true" : L"false", debug.changed ? L"true" : L"false");
     Handle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));

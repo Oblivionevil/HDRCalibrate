@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#include <Psapi.h>
 #include <bcrypt.h>
 #include <MinHook.h>
 #include <cstdint>
@@ -154,9 +155,10 @@ bool InImage(const void* address, std::size_t length = sizeof(void*)) noexcept {
     const auto base = reinterpret_cast<std::uintptr_t>(g_dwmcore);
     return pointer >= base && length <= g_imageSize && pointer - base <= g_imageSize - length;
 }
-bool CodeEquals(std::uint32_t rva, const std::uint8_t* bytes, std::size_t length) noexcept {
-    return rva <= g_imageSize && length <= g_imageSize - rva &&
-        std::memcmp(g_dwmcore + rva, bytes, length) == 0;
+bool CodeEquals(const std::uint8_t* image, std::size_t imageSize,
+                std::uint32_t rva, const std::uint8_t* bytes, std::size_t length) noexcept {
+    return rva <= imageSize && length <= imageSize - rva &&
+        std::memcmp(image + rva, bytes, length) == 0;
 }
 
 void PublishSample(Session* session, Sample* destination, const Sample& source) noexcept;
@@ -277,7 +279,10 @@ bool ReadPlane(Session* session, void* plane, Sample* sample) noexcept {
         sample->visual = *reinterpret_cast<std::uint64_t*>(bytes + 8);
         sample->surface = *reinterpret_cast<std::uint64_t*>(bytes + 0x10);
         sample->bind = *reinterpret_cast<std::uint64_t*>(bytes + 0x18);
-        if (!sample->surface || *reinterpret_cast<void**>(sample->surface) !=
+        // A plane must carry its own current bind identity. Zero is not a
+        // request to adopt the backing surface's bind (the candidate reader
+        // legitimately has no plane bind yet). Missing evidence fails closed.
+        if (!sample->bind || !sample->surface || *reinterpret_cast<void**>(sample->surface) !=
             g_dwmcore + contract::kGlobalCompositionSurfaceVtableRva) return false;
         // OverlayPlaneInfo copies the 0x70-byte attributes to +0x20; the source
         // ColorSpace field within those attributes is +0x4C.
@@ -426,7 +431,8 @@ LONG __fastcall CandidateHook(void* self, void* visual, const void* rect0, void*
     SetLastError(incomingError);
     LONG result;
     if (sample.decision == Decision::Veto) {
-        // The native function's ordinary rejected-candidate branch at 0x2680FA
+        // The native function's ordinary rejected-candidate branch
+        // (8875: 0x2680FA; 9278: 0x265C3F)
         // returns S_OK without recording a plane. Its public ABI has no output
         // parameters. Returning zero here matches that documented disassembly.
         result = 0;
@@ -506,6 +512,52 @@ bool ExactHost() noexcept {
         wcscat_s(expected, L"\\dwm.exe") == 0 && _wcsicmp(executable, expected) == 0;
 }
 
+// The exact same bounded mapped-image check is exercised by host tests using
+// their own memory. It neither loads a module nor publishes global pointers.
+// The production caller still requires the exact system path and file SHA.
+bool VerifyMappedImageContract(const std::uint8_t* image, std::size_t mappedSize) noexcept {
+    using namespace contract;
+    if (!image || mappedSize < sizeof(IMAGE_DOS_HEADER) || mappedSize > 128u * 1024u * 1024u)
+        return false;
+    __try {
+        const auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(image);
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0 || dos->e_lfanew > 0x100000)
+            return false;
+        const auto ntOffset = static_cast<std::size_t>(dos->e_lfanew);
+        if (ntOffset > mappedSize || sizeof(IMAGE_NT_HEADERS64) > mappedSize - ntOffset)
+            return false;
+        const auto nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(image + ntOffset);
+        if (nt->Signature != IMAGE_NT_SIGNATURE || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
+            nt->FileHeader.SizeOfOptionalHeader != sizeof(IMAGE_OPTIONAL_HEADER64) ||
+            nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
+            nt->OptionalHeader.SizeOfImage != mappedSize)
+            return false;
+#if HDR_SELECTIVE_DWMCORE_BUILD == 261009278
+        if (mappedSize != kMappedImageSize) return false;
+#endif
+#define CHECK_CODE(name, rva) CodeEquals(image, mappedSize, rva, name, sizeof(name))
+        const bool baseContract = CHECK_CODE(kCandidatePrologue, kCandidateRva) &&
+            CHECK_CODE(kIndependentFlipPrologue, kIndependentFlipRva) &&
+            CHECK_CODE(kVisualGetHwnd, kVisualGetHwndRva) && CHECK_CODE(kNodeGetHwnd, kNodeGetHwndRva) &&
+            CHECK_CODE(kVisualGetPid, kVisualGetPidRva) && CHECK_CODE(kNodeGetPid, kNodeGetPidRva) &&
+            CHECK_CODE(kTopLevelWindow, kTopLevelWindowRva) &&
+            CHECK_CODE(kRealizationPixelFormatThunk, kRealizationPixelFormatThunkRva) &&
+            CHECK_CODE(kSurfacePixelFormatGetter, kSurfacePixelFormatGetterRva) &&
+            CHECK_CODE(kD2DBitmapPixelFormatGetter, kD2DBitmapPixelFormatGetterRva) &&
+            CHECK_CODE(kSurfaceGetRealization, kSurfaceGetRealizationRva) &&
+            CHECK_CODE(kSurfaceGetBind, kSurfaceGetBindRva);
+#if HDR_SELECTIVE_DWMCORE_BUILD == 261009278
+        return baseContract && CHECK_CODE(kPixelFormatOuter, kPixelFormatOuterRva) &&
+            CHECK_CODE(kPlaneConstructor, kPlaneConstructorRva);
+#else
+        return baseContract;
+#endif
+#undef CHECK_CODE
+    } __except (ReadExceptionFilter(GetExceptionCode())) {
+        return false;
+    }
+}
+
 bool VerifyContract() noexcept {
     using namespace contract;
     const auto module = GetModuleHandleW(L"dwmcore.dll");
@@ -518,25 +570,14 @@ bool VerifyContract() noexcept {
         wcscat_s(expected, L"\\dwmcore.dll") || _wcsicmp(actual, expected)) return false;
     std::uint8_t hash[32]{};
     if (!Sha256File(actual, hash) || std::memcmp(hash, kDwmcoreSha256, sizeof(hash))) return false;
+    MODULEINFO information{};
+    if (!K32GetModuleInformation(GetCurrentProcess(), module, &information, sizeof(information)) ||
+        information.lpBaseOfDll != module ||
+        !VerifyMappedImageContract(reinterpret_cast<const std::uint8_t*>(module), information.SizeOfImage))
+        return false;
     g_dwmcore = reinterpret_cast<std::uint8_t*>(module);
-    const auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(module);
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0 || dos->e_lfanew > 0x100000) return false;
-    const auto nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(g_dwmcore + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
-        nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) return false;
-    g_imageSize = nt->OptionalHeader.SizeOfImage;
-#define CHECK_CODE(name, rva) CodeEquals(rva, name, sizeof(name))
-    return CHECK_CODE(kCandidatePrologue, kCandidateRva) &&
-        CHECK_CODE(kIndependentFlipPrologue, kIndependentFlipRva) &&
-        CHECK_CODE(kVisualGetHwnd, kVisualGetHwndRva) && CHECK_CODE(kNodeGetHwnd, kNodeGetHwndRva) &&
-        CHECK_CODE(kVisualGetPid, kVisualGetPidRva) && CHECK_CODE(kNodeGetPid, kNodeGetPidRva) &&
-        CHECK_CODE(kTopLevelWindow, kTopLevelWindowRva) &&
-        CHECK_CODE(kRealizationPixelFormatThunk, kRealizationPixelFormatThunkRva) &&
-        CHECK_CODE(kSurfacePixelFormatGetter, kSurfacePixelFormatGetterRva) &&
-        CHECK_CODE(kD2DBitmapPixelFormatGetter, kD2DBitmapPixelFormatGetterRva) &&
-        CHECK_CODE(kSurfaceGetRealization, kSurfaceGetRealizationRva) &&
-        CHECK_CODE(kSurfaceGetBind, kSurfaceGetBindRva);
-#undef CHECK_CODE
+    g_imageSize = information.SizeOfImage;
+    return true;
 }
 
 DWORD InstallHooks(Session* session) noexcept {

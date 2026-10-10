@@ -3,7 +3,6 @@ using HDRCalibrate.Dwm;
 using System;
 using System.ComponentModel;
 using System.Diagnostics;
-using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -17,9 +16,23 @@ namespace HDRCalibrate.Services
         private const int HelperTimeoutMilliseconds = 60000;
         private const int TimedTestHelperTimeoutMilliseconds = 30000;
         private const int SupervisedApplyHelperTimeoutMilliseconds = 90000;
-        private static readonly TimeSpan RestartCooldown = TimeSpan.FromSeconds(10);
+        private readonly DwmRestartCooldown _restartCooldown;
         private readonly XmlSerializer _requestSerializer = new XmlSerializer(typeof(DwmPatchRequest));
         private readonly XmlSerializer _responseSerializer = new XmlSerializer(typeof(DwmPatchResponse));
+
+        public DwmPatchService() : this(null)
+        {
+        }
+
+        public DwmPatchService(DwmRestartCooldown restartCooldown)
+        {
+            _restartCooldown = restartCooldown ?? new DwmRestartCooldown();
+        }
+
+        public TimeSpan GetRestartCooldownRemaining()
+        {
+            return _restartCooldown.GetRemaining();
+        }
 
         public DwmPatchResponse Preflight(CalibrationSettings settings)
         {
@@ -120,8 +133,9 @@ namespace HDRCalibrate.Services
                 "HDRCalibrate",
                 "Requests");
             Directory.CreateDirectory(requestRoot);
+            long? restartMark = null;
             if (command != DwmPatchCommand.SafetyReset && command != DwmPatchCommand.Preflight)
-                EnforceAndMarkRestartCooldown(Path.GetDirectoryName(requestRoot));
+                restartMark = _restartCooldown.EnforceAndMark();
             var token = Guid.NewGuid().ToString("N");
             var requestPath = Path.Combine(requestRoot, "request-" + token + ".xml");
             var responsePath = Path.Combine(requestRoot, "response-" + token + ".xml");
@@ -157,10 +171,15 @@ namespace HDRCalibrate.Services
                 }
                 catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
                 {
+                    TryRevertUnusedRestartMark(restartMark);
                     throw new OperationCanceledException("Die Administratorabfrage wurde abgebrochen.", ex);
                 }
 
-                if (helper == null) throw new InvalidOperationException("Der DWM-Helfer konnte nicht gestartet werden.");
+                if (helper == null)
+                {
+                    TryRevertUnusedRestartMark(restartMark);
+                    throw new InvalidOperationException("Der DWM-Helfer konnte nicht gestartet werden.");
+                }
                 using (helper)
                 {
                     helperStarted = true;
@@ -240,7 +259,7 @@ namespace HDRCalibrate.Services
                 "HDRCalibrate",
                 "Requests");
             Directory.CreateDirectory(requestRoot);
-            EnforceAndMarkRestartCooldown(Path.GetDirectoryName(requestRoot));
+            var restartMark = _restartCooldown.EnforceAndMark();
 
             var token = Guid.NewGuid().ToString("N");
             var requestPath = Path.Combine(requestRoot, "request-" + token + ".xml");
@@ -289,10 +308,15 @@ namespace HDRCalibrate.Services
                 }
                 catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
                 {
+                    TryRevertUnusedRestartMark(restartMark);
                     throw new OperationCanceledException("Die Administratorabfrage wurde abgebrochen.", ex);
                 }
 
-                if (helper == null) throw new InvalidOperationException("Der DWM-Helfer konnte nicht gestartet werden.");
+                if (helper == null)
+                {
+                    TryRevertUnusedRestartMark(restartMark);
+                    throw new InvalidOperationException("Der DWM-Helfer konnte nicht gestartet werden.");
+                }
                 using (helper)
                 {
                     helperStarted = true;
@@ -431,28 +455,16 @@ namespace HDRCalibrate.Services
             return "\"" + value.Replace("\"", "\\\"") + "\"";
         }
 
-        private static void EnforceAndMarkRestartCooldown(string stateRoot)
+        private void TryRevertUnusedRestartMark(long? restartMark)
         {
-            var path = Path.Combine(stateRoot, "last-dwm-restart.txt");
-            if (File.Exists(path))
+            // No helper started, so DWM was not restarted. If the marker cannot be
+            // released, the guard simply stays in place (fail closed).
+            if (!restartMark.HasValue) return;
+            try { _restartCooldown.RevertUnusedMark(restartMark.Value); }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
             {
-                DateTime lastAttempt;
-                if (!long.TryParse(File.ReadAllText(path), out var ticks)
-                    || ticks <= DateTime.MinValue.Ticks
-                    || ticks >= DateTime.MaxValue.Ticks)
-                    lastAttempt = File.GetLastWriteTimeUtc(path);
-                else
-                    lastAttempt = new DateTime(ticks, DateTimeKind.Utc);
-
-                var remaining = RestartCooldown - (DateTime.UtcNow - lastAttempt);
-                if (remaining > TimeSpan.Zero)
-                {
-                    throw new InvalidOperationException(
-                        "Zum Schutz der Anzeige ist der nächste DWM-Neustart erst in " +
-                        Math.Ceiling(remaining.TotalSeconds) + " Sekunden möglich.");
-                }
+                Trace.TraceWarning("DWM-Neustartsperre nach abgebrochenem Start nicht freigegeben: " + ex.Message);
             }
-            File.WriteAllText(path, DateTime.UtcNow.Ticks.ToString(CultureInfo.InvariantCulture));
         }
 
         private static void TryDelete(string path)

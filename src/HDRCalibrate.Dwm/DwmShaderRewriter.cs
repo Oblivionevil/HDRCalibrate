@@ -62,8 +62,8 @@ namespace HDRCalibrate.Dwm
                 DxbcContainer.UpdateChecksum(modified, entry.Blob);
             }
 
-            if (targetEntries.Count != DwmCoreInspector.Targets.Length || patchedConstants != 16)
-                throw new InvalidDataException("Der SDR-Konstantenpatch hat nicht exakt vier Shader und 16 Konstantenvektoren vorbereitet.");
+            if (targetEntries.Count != 6 || targetEntries.Count != DwmCoreInspector.Targets.Length || patchedConstants != 24)
+                throw new InvalidDataException("Der SDR-Konstantenpatch hat nicht exakt sechs Shader und 24 Konstantenvektoren vorbereitet.");
 
             var changedParents = new List<DxbcBlob>();
             foreach (var parentGroup in parentEntries)
@@ -255,7 +255,9 @@ namespace HDRCalibrate.Dwm
                         throw new InvalidDataException("Der Konstantenpatch hat Offset oder Größe eines DXBC-Chunks verändert.");
                 }
 
-                foreach (var fourCc in new[] { "Aon9", "STAT", "RDEF", "LFS0" })
+                // Aon9 exists only in downlevel profiles. The manifest has
+                // already validated each profile's exact chunk list.
+                foreach (var fourCc in entry.Blob.Chunks.Select(chunk => chunk.FourCc).Where(name => name != "SHDR"))
                     EnsureChunkBytesEqual(original, entry.Blob.GetChunk(fourCc), modified, patched.GetChunk(fourCc), fourCc);
 
                 var shaderChunk = patched.GetChunk("SHDR");

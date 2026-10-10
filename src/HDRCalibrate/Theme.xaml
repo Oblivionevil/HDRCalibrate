@@ -20,7 +20,7 @@
     <Style TargetType="Window">
         <Setter Property="Background" Value="{StaticResource WindowBrush}" />
         <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
-        <Setter Property="Icon" Value="/HDRCalibrate;component/Assets/HDRCalibrate.ico" />
+        <!-- No assembly-specific icon here: the theme is shared with the setup assembly. -->
         <Setter Property="FontFamily" Value="Segoe UI Variable Text, Segoe UI" />
         <Setter Property="FontSize" Value="14" />
     </Style>

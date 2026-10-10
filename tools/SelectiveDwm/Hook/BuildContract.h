@@ -2,11 +2,22 @@
 #include <cstddef>
 #include <cstdint>
 
+// Production builds remain pinned to 8875. Selecting another private ABI must
+// be an explicit compiler input; never select by a runtime hash-only override.
+#ifndef HDR_SELECTIVE_DWMCORE_BUILD
+#define HDR_SELECTIVE_DWMCORE_BUILD 261008875
+#endif
+
+#if HDR_SELECTIVE_DWMCORE_BUILD == 261009278
+#include "BuildContract_26100_9278.h"
+#elif HDR_SELECTIVE_DWMCORE_BUILD == 261008875
 namespace selective_dwm::contract {
 
 // Only Windows dwmcore 10.0.26100.8875 is supported. These RVAs are private ABI,
 // reconstructed from its matching public PDB and independently disassembled.
 // An OS update, a changed prologue, or an unknown concrete getter fails closed.
+inline constexpr wchar_t kDwmcoreBuild[] = L"10.0.26100.8875";
+inline constexpr wchar_t kDwmcoreSha256Hex[] = L"825726F26BD6B5A02B49F6145963B54D537D3D1239055DDA28D1FB0B3E864EF3";
 inline constexpr std::uint8_t kDwmcoreSha256[32] = {
     0x82,0x57,0x26,0xF2,0x6B,0xD6,0xB5,0xA0,0x2B,0x49,0xF6,0x14,0x59,0x63,0xB5,0x4D,
     0x53,0x7D,0x3D,0x12,0x39,0x05,0x5D,0xDA,0x28,0xD1,0xFB,0x0B,0x3E,0x86,0x4E,0xF3
@@ -70,3 +81,6 @@ inline constexpr std::uint8_t kSurfaceGetRealization[] = {
 inline constexpr std::uint8_t kSurfaceGetBind[] = {0x48,0x8B,0x81,0x88,0x00,0x00,0x00,0xC3};
 
 } // namespace selective_dwm::contract
+#else
+#error Unsupported HDR_SELECTIVE_DWMCORE_BUILD private ABI contract.
+#endif

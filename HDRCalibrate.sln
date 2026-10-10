@@ -11,6 +11,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HDRCalibrate.Dwm", "src\HDR
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HDRCalibrate.DwmHelper", "src\HDRCalibrate.DwmHelper\HDRCalibrate.DwmHelper.csproj", "{E8869043-FD45-4E45-B462-03F30D6DDDE3}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HDRCalibrate.Setup", "installer\HDRCalibrate.Setup\HDRCalibrate.Setup.csproj", "{424040D6-4601-4309-8BA0-7813B7266F50}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -33,6 +35,10 @@ Global
 		{E8869043-FD45-4E45-B462-03F30D6DDDE3}.Debug|x64.Build.0 = Debug|x64
 		{E8869043-FD45-4E45-B462-03F30D6DDDE3}.Release|x64.ActiveCfg = Release|x64
 		{E8869043-FD45-4E45-B462-03F30D6DDDE3}.Release|x64.Build.0 = Release|x64
+		{424040D6-4601-4309-8BA0-7813B7266F50}.Debug|x64.ActiveCfg = Debug|x64
+		{424040D6-4601-4309-8BA0-7813B7266F50}.Debug|x64.Build.0 = Debug|x64
+		{424040D6-4601-4309-8BA0-7813B7266F50}.Release|x64.ActiveCfg = Release|x64
+		{424040D6-4601-4309-8BA0-7813B7266F50}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

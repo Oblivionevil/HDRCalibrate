@@ -31,7 +31,9 @@ namespace HDRCalibrate.Tests
                 Run("Current display profile generation", TestCurrentDisplayProfileGeneration);
                 Run("SDR-only adjustment math", TestSdrAdjustmentMath);
                 Run("Installed dwmcore six-export manifest", TestDwmCoreCompatibility);
+                Run("DWM whole-file identity rejects an altered supported image", TestDwmCoreAlteredFileRejected);
                 Run("DWM ABI-preserving constant patch dry-run", TestDwmShaderRewrite);
+                Run("All non-target DWM shader bytes remain unchanged", TestDwmNonTargetShadersUnchanged);
                 Run("DWM constant patch boundary matrix", TestDwmShaderRewriteBoundaryMatrix);
                 Run("Unexpected DWM shader bytes are rejected", TestDwmShaderAbiMismatchRejected);
                 Run("Unsafe full-shader controls are rejected", TestUnsupportedDwmSettings);
@@ -44,6 +46,14 @@ namespace HDRCalibrate.Tests
                 Run("Supervised apply rejects tampered or incomplete evidence", TestSupervisedApplyProtocolRejections);
                 Run("DWM command contract defaults to Unknown", TestTimedDwmTestFailureReset);
                 Run("DWM state persistence", TestDwmStatePersistence);
+                Run("DWM restart cooldown exact boundary and unchanged rejection marker", DwmRestartCooldownTests.BoundaryAndNoWriteOnReject);
+                Run("DWM restart cooldown malformed and future markers stay guarded", DwmRestartCooldownTests.InvalidAndFutureMarkers);
+                Run("DWM restart cooldown queries are read-only and shared", DwmRestartCooldownTests.IndependentStateAndReadOnlyQuery);
+                Run("DWM restart cooldown read and clock errors fail closed", DwmRestartCooldownTests.GuardErrorsFailClosed);
+                Run("A declined helper start releases only its own restart marker", DwmRestartCooldownTests.UnusedMarkIsReleasedOnlyForItsOwnAttempt);
+                Run("DWM cooldown retains the test until Apply becomes available", TestApplyCooldownCountdown);
+                Run("A pre-helper cooldown rejection cannot revoke the test", TestApplyCooldownFailureKeepsProof);
+                Run("Unreadable cooldown cannot enable Apply", TestApplyCooldownReadFailure);
                 Run("Startup activation approval is exact and fail-closed", TestStartupActivationPolicy);
                 Run("Startup activation policy persistence is atomic", TestStartupActivationPolicyPersistence);
                 Run("Startup activation disable failures remain visible", TestStartupActivationDisableFailure);
@@ -77,6 +87,39 @@ namespace HDRCalibrate.Tests
                 Run("Running and unsupported program launches are refused in both privilege modes", ProgramProfileTests.LaunchGuards);
                 Run("Elevated program launches delegate exact arguments to Explorer", ProgramProfileTests.ElevatedLaunchRouting);
                 Run("Explorer launch failures never retry through a second mechanism", ProgramProfileTests.ExplorerFailureDoesNotRetry);
+                Run("Program gamma requires exact committed apply evidence", ProgramGammaApprovalTests.CommittedEvidence);
+                Run("Global shader support cannot authorize private DWM hooks", ProgramGammaApprovalTests.SeparatePrivateBuildGate);
+                Run("Unsupported private hooks preserve a successful global gamma commit", ProgramGammaApprovalTests.UnsupportedPrivateBuildPreservesGlobalCommit);
+                Run("Program gamma approval binds process and settings", ProgramGammaApprovalTests.IdentityAndSettingsChanges);
+                Run("Program gamma snapshots revoke permanently", ProgramGammaApprovalTests.SnapshotsAndLiveness);
+                Run("Program gamma approval binds Windows identity", ProgramGammaApprovalTests.WindowsIdentityChanges);
+                Run("Program gamma requires manual approval and test", ProgramGammaControllerTests.ApprovalAndManualActivationGates);
+                Run("Unsupported private build cannot find targets or launch a helper", ProgramGammaControllerTests.UnsupportedBuildNeverFindsTargetOrLaunchesHelper);
+                Run("Program gamma successful test enables only exact activation", ProgramGammaControllerTests.SuccessfulTestEnablesExactActivation);
+                Run("Program gamma incomplete completion never approves", ProgramGammaControllerTests.IncompleteCompletionsNeverApprove);
+                Run("Program gamma proof rejects identity and settings changes", ProgramGammaControllerTests.IdentityAndSettingsChangesRejectProof);
+                Run("Program gamma rechecks after UAC and test", ProgramGammaControllerTests.ChangesDuringTestOrAuthorizationRejectProof);
+                Run("Program gamma Stop and Dispose preserve one-session boundary", ProgramGammaControllerTests.StopDisposeAndSingleSession);
+                Run("Program gamma late Stop cannot restore approval", ProgramGammaControllerTests.StopDuringFinalValidationCannotRestoreProof);
+                Run("Program gamma native withdrawal cannot be revived by late telemetry", ProgramGammaControllerTests.NativeWithdrawalCannotReactivate);
+                Run("Program gamma test cannot survive a Windows identity change", ProgramGammaControllerTests.WindowsChangesRejectProof);
+                Run("Program gamma arguments bind exact processes and bounded duration", ProgramGammaNativeContractTests.ArgumentIdentityAndDuration);
+                Run("Program gamma native gates reject stale HDR and unsafe completion", ProgramGammaNativeContractTests.NativeCompletionGates);
+                Run("Program gamma JSON is bounded and explicit", ProgramGammaNativeContractTests.JsonReplyValidation);
+                Run("Program gamma UI wiring and offscreen layout", ProgramGammaUiTests.ListActionsAndOffscreenLayout);
+                Run("Program gamma native manifest, x64 payload and write locks", ProgramGammaPayloadTests.ManifestAndLockedNativeFiles);
+                Run("Program gamma UAC wait is cancellable and late handles are disposed", ProgramGammaRuntimeTests.AbandonedUacDoesNotHoldSession);
+                Run("Program gamma heartbeat requires a responsive owner dispatcher", ProgramGammaRuntimeTests.UnresponsiveDispatcherWithdrawsHeartbeat);
+                Run("Unsupported private build is rejected before opening native files", ProgramGammaRuntimeTests.UnsupportedBuildBlockedBeforeNativeFiles);
+                Run("Setup manifest rejects unsafe or ambiguous entries", SetupTests.ManifestRejectsUnsafeEntries);
+                Run("Setup extracts only the exact hash-verified payload", SetupTests.PackageExtractionVerifiesEveryFile);
+                Run("Fresh setup registers only its own per-user state", SetupTests.FreshInstallRegistersOnlyOwnState);
+                Run("Setup takes over an Inno installation without touching foreign files", SetupTests.UpgradeTakesOverInnoInstallation);
+                Run("Native mismatch or stop failure leaves the installation unchanged", SetupTests.RejectedUpdatesChangeNothing);
+                Run("A failed file replacement restores every previous file", SetupTests.FailedCopyRestoresPreviousFiles);
+                Run("Uninstall removes only owned files, values and shortcuts", SetupTests.UninstallRemovesOnlyOwnedState);
+                Run("Setup arguments, stop codes and folders are exact", SetupTests.ArgumentsAndStopCodesAreExact);
+                Run("Setup window loads the shared theme in its own domain", SetupUiTests.WindowLoadsSharedThemeInBothModes);
 
                 Console.WriteLine($"PASS: {Passed.Count} Tests");
                 foreach (var name in Passed) Console.WriteLine("  ✓ " + name);
@@ -443,13 +486,64 @@ namespace HDRCalibrate.Tests
         {
             var info = DwmCoreInspector.InspectSystem();
             Assert(info.IsCompatible, "Installed dwmcore.dll is not compatible: " + info.Reason);
-            Assert(info.TargetShaderCount == 4, "Expected exactly four SDR target shaders.");
+            Assert(info.TargetShaderCount == 6, "Expected all six SDR target shaders, including FL10.");
             Assert(info.ValidatedSdrShaderCount == 6, "Expected exactly six profiled SDR exports.");
             Assert(info.ValidatedParentLibraryCount == 3, "Expected exactly three SDR profile libraries.");
             Assert(string.Equals(info.DwmCoreSha256, DwmCoreInspector.SupportedDwmCoreSha256,
                 StringComparison.OrdinalIgnoreCase), "dwmcore.dll SHA-256 is not pinned.");
             Assert(!string.IsNullOrWhiteSpace(info.DwmCoreVersion), "dwmcore.dll has no version.");
             Console.WriteLine("DWMCORE: " + info.DwmCoreVersion + "; " + info.Reason);
+        }
+
+        private static void TestDwmCoreAlteredFileRejected()
+        {
+            var image = File.ReadAllBytes(DwmCoreInspector.GetSystemDwmCorePath());
+            var path = Path.Combine(Path.GetTempPath(), "HDRCalibrate_DwmIdentity_" + Guid.NewGuid().ToString("N") + ".dll");
+            try
+            {
+                // Keep the original version resource and shader containers intact:
+                // even a change outside their byte ranges must reject the whole image.
+                image[image.Length - 1] ^= 1;
+                File.WriteAllBytes(path, image);
+                var result = DwmCoreInspector.InspectFile(path);
+                Assert(!result.IsCompatible, "A changed system-image hash was accepted.");
+                Assert(result.TargetShaderCount == 0 && result.ValidatedSdrShaderCount == 0,
+                    "An unpinned image reached shader approval.");
+                Assert(!string.Equals(result.DwmCoreSha256, DwmCoreInspector.SupportedDwmCoreSha256,
+                    StringComparison.OrdinalIgnoreCase), "Mutation did not change the whole-file fingerprint.");
+            }
+            finally
+            {
+                if (File.Exists(path)) File.Delete(path);
+            }
+        }
+
+        private static void TestDwmNonTargetShadersUnchanged()
+        {
+            var original = File.ReadAllBytes(DwmCoreInspector.GetSystemDwmCorePath());
+            var targets = new HashSet<string>(new[]
+            {
+                "4CDE30EDFF9BEE225DA9465FDF59CD84",
+                "7042A5DE5C816B2D89D14AD3CCD76569",
+                "96E6D1589255ECCD1DD7D4DBEC54D285",
+                "2126B037C1A2FBDDE355B6E6DD9CAF3C",
+                "2C8926FFE229F05D967C72668DC3ADDB",
+                "F693BFBBAF24B3D9366354BE8898A7F5"
+            }, StringComparer.OrdinalIgnoreCase);
+            var untouched = DxbcContainer.FindAll(original).Where(blob =>
+                !blob.Chunks.Any(chunk => chunk.FourCc == "LIBF")
+                && !targets.Contains(DxbcContainer.GetStoredChecksumHex(original, blob))).ToList();
+            Assert(untouched.Count > 300, "The updated Windows image did not supply the expected non-target shader coverage.");
+            foreach (var gamma in new[] { 2.0, 2.2, 2.4 })
+            {
+                var modified = DwmShaderRewriter.Rewrite(original,
+                    new CalibrationSettings { Gamma = gamma, ApplySdrGammaCorrection = true }, out _);
+                foreach (var blob in untouched)
+                    for (var index = blob.Offset; index < blob.EndOffset; index++)
+                        Assert(original[index] == modified[index],
+                            "A non-target shader changed (HDR exports must remain byte-identical).");
+            }
+            Console.WriteLine("DWM NON-TARGETS: " + untouched.Count + " unchanged at gamma 2.0 / 2.2 / 2.4");
         }
 
         private static void TestDwmShaderRewrite()
@@ -464,9 +558,9 @@ namespace HDRCalibrate.Tests
             };
             var modified = DwmShaderRewriter.Rewrite(original, settings, out var report);
 
-            Assert(report.PatchedShaderCount == 4, "Dry-run did not patch exactly four SDR shaders.");
-            Assert(report.PatchedConstantVectorCount == 16, "Dry-run did not patch exactly 16 SHDR constant vectors.");
-            Assert(report.ParentLibraryCount == 2, "Unexpected number of parent shader libraries.");
+            Assert(report.PatchedShaderCount == 6, "Dry-run did not patch all six SDR shaders.");
+            Assert(report.PatchedConstantVectorCount == 24, "Dry-run did not patch exactly 24 SHDR constant vectors.");
+            Assert(report.ParentLibraryCount == 3, "Unexpected number of parent shader libraries.");
             Assert(report.ModifiedPageCount > 0, "Dry-run has no modified pages.");
             Assert(report.ChangedByteCount > 0 && report.ChangedByteCount < 512,
                 "Constant patch changed an implausible number of bytes.");
@@ -484,6 +578,8 @@ namespace HDRCalibrate.Tests
             var originalBlobs = DxbcContainer.FindAll(original);
             var targets = new[]
             {
+                "4CDE30EDFF9BEE225DA9465FDF59CD84",
+                "7042A5DE5C816B2D89D14AD3CCD76569",
                 "96E6D1589255ECCD1DD7D4DBEC54D285",
                 "2126B037C1A2FBDDE355B6E6DD9CAF3C",
                 "2C8926FFE229F05D967C72668DC3ADDB",
@@ -510,10 +606,11 @@ namespace HDRCalibrate.Tests
                         "Patched target moved a chunk payload.");
                     Assert(before.DataSize == after.DataSize, "Patched target changed a fixed chunk size.");
                 }
-                foreach (var fourCc in new[] { "Aon9", "STAT", "RDEF", "LFS0" })
+                foreach (var fourCc in originalBlob.Chunks.Select(chunk => chunk.FourCc).Where(name => name != "SHDR"))
                     AssertChunkBytesEqual(original, originalBlob.GetChunk(fourCc), modified, patchedBlob.GetChunk(fourCc),
                         "Constant patch changed the " + fourCc + " chunk.");
-                Assert(BitConverter.ToUInt32(original, originalBlob.GetChunk("Aon9").DataOffset + 36)
+                if (originalBlob.GetChunk("Aon9") != null)
+                    Assert(BitConverter.ToUInt32(original, originalBlob.GetChunk("Aon9").DataOffset + 36)
                     == BitConverter.ToUInt32(modified, patchedBlob.GetChunk("Aon9").DataOffset + 36),
                     "Patched target changed the 9.1/9.3 Aon9 profile token.");
                 Assert(DxbcContainer.VerifyChecksum(modified, patchedBlob), "Patched target checksum is invalid.");
@@ -522,18 +619,6 @@ namespace HDRCalibrate.Tests
                 D3DCompiler.ValidateDxbc(DxbcContainer.Slice(modified, patchedBlob), "fixed-layout patched target");
             }
 
-            foreach (var checksum in new[]
-            {
-                "4CDE30EDFF9BEE225DA9465FDF59CD84",
-                "7042A5DE5C816B2D89D14AD3CCD76569"
-            })
-            {
-                var native = originalBlobs.Single(blob => string.Equals(
-                    DxbcContainer.GetStoredChecksumHex(original, blob), checksum, StringComparison.OrdinalIgnoreCase));
-                for (var index = 0; index < native.Size; index++)
-                    Assert(original[native.Offset + index] == modified[native.Offset + index],
-                        "The unpatched FL10 SDR export changed.");
-            }
         }
 
         private static void TestDwmShaderAbiMismatchRejected()
@@ -576,9 +661,9 @@ namespace HDRCalibrate.Tests
                         ApplySdrGammaCorrection = true
                     }, out var report);
                     Assert(modified.Length == original.Length, "Boundary rewrite changed module size.");
-                    Assert(report.PatchedShaderCount == 4, "Boundary rewrite target count changed.");
-                    Assert(report.PatchedConstantVectorCount == 16, "Boundary rewrite constant count changed.");
-                    Assert(report.ParentLibraryCount == 2, "Boundary rewrite parent count changed.");
+                    Assert(report.PatchedShaderCount == 6, "Boundary rewrite target count changed.");
+                    Assert(report.PatchedConstantVectorCount == 24, "Boundary rewrite constant count changed.");
+                    Assert(report.ParentLibraryCount == 3, "Boundary rewrite parent count changed.");
                     Assert(report.ModifiedPageCount > 0, "Boundary rewrite produced no changed pages.");
                 }
             }
@@ -611,8 +696,8 @@ namespace HDRCalibrate.Tests
                 ApplySdrGammaCorrection = true
             });
             Assert(response.Success, "Read-only DWM preflight failed: " + response.Message);
-            Assert(response.PatchedShaderCount == 4, "Preflight did not validate four patch targets.");
-            Assert(response.PatchedConstantVectorCount == 16, "Preflight did not validate 16 constant vectors.");
+            Assert(response.PatchedShaderCount == 6, "Preflight did not validate all six patch targets.");
+            Assert(response.PatchedConstantVectorCount == 24, "Preflight did not validate 24 constant vectors.");
             Assert(response.ModifiedPageCount > 0, "Preflight found no changed pages.");
             Assert(IsUppercaseSha256(response.PatchPlanFingerprint),
                 "Preflight did not return a valid patch-plan fingerprint.");
@@ -1732,12 +1817,98 @@ namespace HDRCalibrate.Tests
         private static MainViewModel CreateIsolatedViewModel(
             IStartupActivationPolicyStore policyStore = null,
             IWindowsEnvironmentIdentityProvider identityProvider = null,
-            IRunValueStore runValueStore = null)
+            IRunValueStore runValueStore = null,
+            Func<TimeSpan> restartCooldownRemainingProvider = null)
         {
             return new MainViewModel(
                 new AutostartService(runValueStore ?? new MemoryRunValueStore(), @"C:\Apps\HDRCalibrate.exe"),
                 policyStore ?? new MemoryStartupActivationPolicyStore(),
-                identityProvider ?? new MutableWindowsEnvironmentIdentityProvider(CreateTestWindowsEnvironment()));
+                identityProvider ?? new MutableWindowsEnvironmentIdentityProvider(CreateTestWindowsEnvironment()),
+                restartCooldownRemainingProvider ?? (() => TimeSpan.Zero));
+        }
+
+        private static MainViewModel CreateCooldownViewModel(MemoryStartupActivationPolicyStore store,
+            WindowsEnvironmentIdentity environment, Func<TimeSpan> remaining)
+        {
+            store.Save(CreateTestStartupPolicy(environment, false));
+            var viewModel = CreateIsolatedViewModel(store,
+                new MutableWindowsEnvironmentIdentityProvider(environment), null, remaining);
+            viewModel.Gamma = 2.4;
+            viewModel.ApplySdrGammaCorrection = true;
+            viewModel.BrightnessPercent = 0;
+            var display = new DisplayInfo();
+            SetInternalProperty(display, nameof(DisplayInfo.HdrActive), true);
+            SetInternalProperty(display, nameof(DisplayInfo.AdvancedColorLimitedByPolicy), false);
+            SetPrivateField(viewModel, "_selectedDisplay", display);
+            SetPrivateField(viewModel, "_preflight", CreateTestStartupPreflight());
+            SetPrivateField(viewModel, "_lastTestedSettingsKey",
+                CalibrationSettingsIdentity.Compute(CreateTestStartupSettings()));
+            SetPrivateField(viewModel, "_lastTestedWindowsEnvironment", environment.Clone());
+            return viewModel;
+        }
+
+        private static void TestApplyCooldownCountdown()
+        {
+            var remaining = TimeSpan.FromMilliseconds(95.7647);
+            var environment = CreateTestWindowsEnvironment();
+            var store = new MemoryStartupActivationPolicyStore();
+            var viewModel = CreateCooldownViewModel(store, environment, () => remaining);
+            Assert(viewModel.IsCurrentSettingsTested && !viewModel.CanApply && !viewModel.CanTest,
+                "A successful test was lost or a restart was offered during the guard.");
+            Assert(viewModel.ApplyButtonText == "Warten (1 s)", "Fractional remaining time was not rounded up.");
+            var apply = typeof(MainViewModel).GetMethod("ApplyAsync",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            // Directly invoking the command method must return before any dialog,
+            // profile change, helper creation or state persistence.
+            ((System.Threading.Tasks.Task)apply.Invoke(viewModel, null)).GetAwaiter().GetResult();
+            Assert(viewModel.IsCurrentSettingsTested && !store.Load().ApprovalRevoked,
+                "Blocked Apply revoked the successful test.");
+            var commandNotifications = 0;
+            viewModel.ApplyCommand.CanExecuteChanged += (sender, args) => commandNotifications++;
+            remaining = TimeSpan.Zero;
+            viewModel.RefreshRestartCooldown();
+            Assert(viewModel.CanApply && viewModel.ApplyCommand.CanExecute(null)
+                && viewModel.ApplyButtonText == "Anwenden" && commandNotifications > 0,
+                "Apply did not become available after the guard expired.");
+            Assert(viewModel.IsCurrentSettingsTested && !store.Load().Enabled && !store.Load().ApprovalRevoked,
+                "Countdown expiry revoked the test or silently enabled startup.");
+        }
+
+        private static void TestApplyCooldownFailureKeepsProof()
+        {
+            var environment = CreateTestWindowsEnvironment();
+            var store = new MemoryStartupActivationPolicyStore();
+            var viewModel = CreateCooldownViewModel(store, environment, () => TimeSpan.FromMilliseconds(96));
+            var handleFailure = typeof(MainViewModel).GetMethod("HandleApplyFailure",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            handleFailure.Invoke(viewModel, new object[] { new DwmRestartCooldownException(TimeSpan.FromMilliseconds(96)) });
+            Assert(viewModel.IsCurrentSettingsTested && !store.Load().ApprovalRevoked && !viewModel.IsError,
+                "An early cooldown exception revoked the successful test.");
+            Assert(((WindowsEnvironmentIdentity)GetPrivateField(viewModel, "_lastTestedWindowsEnvironment")).Matches(environment),
+                "Cooldown rejection lost the exact tested Windows identity.");
+            handleFailure.Invoke(viewModel, new object[] { new InvalidOperationException("Synthetic actual Apply failure") });
+            Assert(!viewModel.IsCurrentSettingsTested && store.Load().ApprovalRevoked && viewModel.IsError,
+                "An actual Apply failure stopped revoking unsafe proof.");
+        }
+
+        private static void TestApplyCooldownReadFailure()
+        {
+            var fail = true;
+            var environment = CreateTestWindowsEnvironment();
+            var store = new MemoryStartupActivationPolicyStore();
+            var viewModel = CreateCooldownViewModel(store, environment, () =>
+            {
+                if (fail) throw new IOException("Synthetic unreadable guard");
+                return TimeSpan.Zero;
+            });
+            Assert(!viewModel.CanApply && !viewModel.CanTest && viewModel.IsRestartCooldownActive,
+                "An unreadable restart guard allowed a command.");
+            Assert(viewModel.RestartCooldownText.Contains("Synthetic unreadable guard"),
+                "Unreadable guard failure was hidden.");
+            fail = false;
+            viewModel.RefreshRestartCooldown();
+            Assert(viewModel.CanApply && viewModel.IsCurrentSettingsTested && !store.Load().ApprovalRevoked,
+                "Read-only guard recovery lost the test or left Apply blocked.");
         }
 
         private static MemoryRunValueStore CreateEnabledRunValueStore()
@@ -1812,7 +1983,8 @@ namespace HDRCalibrate.Tests
             WindowsEnvironmentIdentity windowsEnvironment,
             bool enabled)
         {
-            var helperPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "HDRCalibrate.DwmHelper.exe");
+            var helperPath = Path.Combine(Path.GetDirectoryName(typeof(MainViewModel).Assembly.Location),
+                "HDRCalibrate.DwmHelper.exe");
             Assert(File.Exists(helperPath),
                 "Windows update view-model tests require the built helper in the test output directory.");
             var helperVersion = System.Diagnostics.FileVersionInfo.GetVersionInfo(helperPath).FileVersion.Trim();

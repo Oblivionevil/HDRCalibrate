@@ -9,6 +9,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
@@ -25,6 +26,7 @@ namespace HDRCalibrate.ViewModels
         private readonly AutostartService _autostartService;
         private readonly IStartupActivationPolicyStore _startupActivationPolicyStore;
         private readonly IWindowsEnvironmentIdentityProvider _windowsEnvironmentIdentityProvider;
+        private readonly Func<TimeSpan> _restartCooldownRemainingProvider;
         private readonly SnapshotWindowsEnvironmentProvider _startupEnvironmentSnapshot = new SnapshotWindowsEnvironmentProvider();
         private DisplayInfo _selectedDisplay;
         private PersistedDwmState _dwmState;
@@ -48,6 +50,10 @@ namespace HDRCalibrate.ViewModels
         private string _startupActivationStatus = "Startaktivierung wird geprüft";
         private string _lastTestedSettingsKey;
         private WindowsEnvironmentIdentity _lastTestedWindowsEnvironment;
+        private ProgramGammaApproval _programGammaApproval;
+        private string _programGammaApprovalFailure;
+        private TimeSpan _restartCooldownRemaining;
+        private string _restartCooldownError;
         private double _gamma = 2.2;
         private bool _applySdrGammaCorrection = true;
         private double _brightnessPercent;
@@ -71,13 +77,16 @@ namespace HDRCalibrate.ViewModels
         public MainViewModel(
             AutostartService autostartService,
             IStartupActivationPolicyStore startupActivationPolicyStore,
-            IWindowsEnvironmentIdentityProvider windowsEnvironmentIdentityProvider = null)
+            IWindowsEnvironmentIdentityProvider windowsEnvironmentIdentityProvider = null,
+            Func<TimeSpan> restartCooldownRemainingProvider = null)
         {
             _autostartService = autostartService ?? throw new ArgumentNullException(nameof(autostartService));
             _startupActivationPolicyStore = startupActivationPolicyStore
                 ?? throw new ArgumentNullException(nameof(startupActivationPolicyStore));
             _windowsEnvironmentIdentityProvider = windowsEnvironmentIdentityProvider
                 ?? new WindowsEnvironmentIdentityProvider();
+            _restartCooldownRemainingProvider = restartCooldownRemainingProvider
+                ?? _dwmPatchService.GetRestartCooldownRemaining;
             RefreshCommand = new AsyncRelayCommand(RefreshAsync, () => !IsBusy);
             ApplyCommand = new AsyncRelayCommand(ApplyAsync, () => CanApply && !IsBusy);
             TestCommand = new AsyncRelayCommand(RunTimedTestAsync, () => CanTest && !IsBusy);
@@ -110,6 +119,7 @@ namespace HDRCalibrate.ViewModels
             RefreshAutostartState();
             RefreshStartupActivationState();
             RebuildCurve();
+            RefreshRestartCooldown();
         }
 
         public ObservableCollection<DisplayInfo> Displays { get; } = new ObservableCollection<DisplayInfo>();
@@ -268,16 +278,30 @@ namespace HDRCalibrate.ViewModels
             && !(SelectedDisplay?.AdvancedColorLimitedByPolicy ?? true);
         public bool IsCurrentSettingsTested => string.Equals(
             _lastTestedSettingsKey, GetSettingsKey(BuildSettings()), StringComparison.Ordinal);
+        public bool IsRestartCooldownActive => _restartCooldownRemaining > TimeSpan.Zero
+            || !string.IsNullOrEmpty(_restartCooldownError);
+        public string ApplyButtonText => !string.IsNullOrEmpty(_restartCooldownError)
+            ? "Neustart gesperrt"
+            : _restartCooldownRemaining > TimeSpan.Zero
+                ? "Warten (" + Math.Ceiling(_restartCooldownRemaining.TotalSeconds).ToString("0", CultureInfo.CurrentCulture) + " s)"
+                : "Anwenden";
+        public string RestartCooldownText => !string.IsNullOrEmpty(_restartCooldownError)
+            ? "Neustartsperre nicht prüfbar: " + _restartCooldownError
+            : _restartCooldownRemaining > TimeSpan.Zero
+                ? "Anzeige-Schutz: noch " + Math.Ceiling(_restartCooldownRemaining.TotalSeconds).ToString("0", CultureInfo.CurrentCulture)
+                    + " s warten." + (IsCurrentSettingsTested ? " Der erfolgreiche Test bleibt gültig." : string.Empty)
+                : string.Empty;
         public bool CanApply
         {
             get
             {
                 var settings = BuildSettings();
-                return CanUseDwm && !IsLivePatchBlocked
+                return CanUseDwm && !IsLivePatchBlocked && !IsRestartCooldownActive
                     && (settings.IsNeutral() || IsCurrentSettingsTested);
             }
         }
         public bool CanTest => CanUseDwm
+            && !IsRestartCooldownActive
             && _preflight?.TimedTestAvailable == true
             && !BuildSettings().IsNeutral();
         public bool CanToggleStartupActivation => !IsBusy
@@ -312,6 +336,127 @@ namespace HDRCalibrate.ViewModels
         public ICommand OpenWindowsHdrCommand { get; }
         public ICommand ToggleAutostartCommand { get; }
         public ICommand ToggleStartupActivationCommand { get; }
+
+        public void RefreshRestartCooldown()
+        {
+            var previousSeconds = Math.Ceiling(_restartCooldownRemaining.TotalSeconds);
+            var previousError = _restartCooldownError;
+            try
+            {
+                var remaining = _restartCooldownRemainingProvider();
+                _restartCooldownRemaining = remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
+                _restartCooldownError = null;
+            }
+            catch (Exception ex)
+            {
+                _restartCooldownRemaining = TimeSpan.Zero;
+                _restartCooldownError = string.IsNullOrWhiteSpace(ex.Message) ? ex.GetType().Name : ex.Message;
+            }
+            if (previousSeconds == Math.Ceiling(_restartCooldownRemaining.TotalSeconds)
+                && string.Equals(previousError, _restartCooldownError, StringComparison.Ordinal)) return;
+            OnPropertyChanged(nameof(IsRestartCooldownActive));
+            OnPropertyChanged(nameof(RestartCooldownText));
+            OnPropertyChanged(nameof(ApplyButtonText));
+            OnPropertyChanged(nameof(CanApply));
+            OnPropertyChanged(nameof(CanTest));
+            (ApplyCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+            (TestCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+        }
+
+        public ProgramGammaApproval GetProgramGammaApproval()
+        {
+            if (Volatile.Read(ref _isBusy))
+                throw new InvalidOperationException("Die globale SDR-Korrektur wird gerade geprüft oder geändert. Bitte den Vorgang zuerst abschließen.");
+            var knownVersion = _preflight?.DwmCoreVersion ?? _dwmState?.DwmCoreVersion;
+            if (!string.IsNullOrWhiteSpace(knownVersion) && !ProgramGammaBuildSupport.IsSupportedVersion(knownVersion))
+                throw new NotSupportedException(ProgramGammaBuildSupport.UnsupportedMessage);
+            var approval = Volatile.Read(ref _programGammaApproval);
+            if (approval == null)
+            {
+                var failure = Volatile.Read(ref _programGammaApprovalFailure);
+                throw new InvalidOperationException(failure != null
+                    ? "Die Gamma-Freigabe für Programme konnte nach dem letzten Anwenden nicht erstellt werden: "
+                        + failure + " Bitte die globale SDR-Korrektur erneut testen und anwenden."
+                    : "Die SDR-Gammakorrektur muss in dieser App-Sitzung erfolgreich getestet und anschließend angewendet werden. Ein gespeicherter Zustand allein genügt nicht.");
+            }
+            try
+            {
+                // Activation performs the full hash check. Lease heartbeats use the
+                // cheap update stamp captured alongside this committed snapshot.
+                var currentEnvironment = _windowsEnvironmentIdentityProvider.Capture();
+                if (!approval.WindowsEnvironment.Matches(currentEnvironment)
+                    || !approval.IsStillValid())
+                    throw new InvalidDataException("Windows, DWM oder die bestätigten Gammaeinstellungen wurden geändert.");
+                return approval;
+            }
+            catch (Exception ex)
+            {
+                InvalidateProgramGammaApproval();
+                throw new InvalidOperationException("Die Gamma-Freigabe für Programme ist nicht mehr gültig. Bitte die globale SDR-Korrektur erneut testen und anwenden.", ex);
+            }
+        }
+
+        private void EstablishProgramGammaApproval(DwmPatchResponse committed,
+            PersistedDwmState state, WindowsEnvironmentIdentity approvedEnvironment)
+        {
+            InvalidateProgramGammaApproval();
+            if (state?.Settings?.ApplySdrGammaCorrection != true) return;
+            // A successful global commit remains successful even when the
+            // separately versioned private native hook is unavailable.
+            if (committed == null || approvedEnvironment == null
+                || !ProgramGammaBuildSupport.IsSupported(committed.DwmCoreVersion, approvedEnvironment.DwmCoreSha256))
+                return;
+            try
+            {
+                var stamp = ProgramGammaEnvironmentStamp.Capture(approvedEnvironment);
+                var currentEnvironment = _windowsEnvironmentIdentityProvider.Capture();
+                ProgramGammaApproval approval = null;
+                approval = ProgramGammaApproval.CreateFromCommittedApply(committed, state,
+                    approvedEnvironment, currentEnvironment,
+                    () => IsProgramGammaApprovalCurrent(approval, stamp));
+                if (!stamp.IsCurrent())
+                    throw new InvalidDataException("Windows wurde während der Gamma-Freigabe geändert.");
+                Volatile.Write(ref _programGammaApproval, approval);
+            }
+            catch (Exception ex)
+            {
+                // The optional per-program approval never decides the outcome of
+                // an already committed global apply or startup activation.
+                InvalidateProgramGammaApproval();
+                Volatile.Write(ref _programGammaApprovalFailure,
+                    string.IsNullOrWhiteSpace(ex.Message) ? ex.GetType().Name : ex.Message);
+                Trace.TraceWarning("Gamma-Freigabe für Programme nicht erstellt: " + ex);
+            }
+        }
+
+        private bool IsProgramGammaApprovalCurrent(ProgramGammaApproval approval,
+            ProgramGammaEnvironmentStamp stamp)
+        {
+            if (approval == null || Volatile.Read(ref _isBusy)
+                || !ReferenceEquals(Volatile.Read(ref _programGammaApproval), approval)
+                || !CanUseDwm || IsLivePatchBlocked)
+                return false;
+            using (var currentProcess = Process.GetCurrentProcess())
+            {
+                if (!approval.MatchesCurrentState(_dwmState, BuildSettings(), currentProcess.SessionId)
+                    || DwmPatchService.GetCurrentSessionDwmProcessId() != approval.DwmProcessId)
+                    return false;
+            }
+            using (var dwm = Process.GetProcessById(approval.DwmProcessId))
+            {
+                return !dwm.HasExited && dwm.SessionId == approval.SessionId
+                    && string.Equals(dwm.ProcessName, "dwm", StringComparison.OrdinalIgnoreCase)
+                    && dwm.StartTime.ToUniversalTime().Ticks == approval.DwmStartTimeUtcTicks
+                    && stamp.IsCurrent()
+                    && ReferenceEquals(Volatile.Read(ref _programGammaApproval), approval);
+            }
+        }
+
+        private void InvalidateProgramGammaApproval()
+        {
+            Volatile.Write(ref _programGammaApprovalFailure, null);
+            Interlocked.Exchange(ref _programGammaApproval, null)?.Revoke();
+        }
 
         public void RefreshAutostartState()
         {
@@ -561,6 +706,7 @@ namespace HDRCalibrate.ViewModels
                 }
 
                 approvedSettings = approvedSettings ?? _startupActivationPolicy.Settings.Clone();
+                InvalidateProgramGammaApproval();
                 var approvedPolicy = _startupActivationPolicy;
                 var approvedWindowsEnvironment = approvedPolicy.WindowsEnvironment.Clone();
                 LoadSettings(approvedSettings);
@@ -586,6 +732,7 @@ namespace HDRCalibrate.ViewModels
                         startupApproval));
                     _dwmState = committedState
                         ?? throw new InvalidDataException("Der überwachte Start-Commit enthält keinen DWM-Zustand.");
+                    EstablishProgramGammaApproval(response, committedState, approvedWindowsEnvironment);
                     await RefreshAsync();
                     StatusMessage = response.PatchedConstantVectorCount +
                         " geprüfte SDR-Konstanten beim Windows-Start in PID " + response.DwmProcessId +
@@ -626,6 +773,7 @@ namespace HDRCalibrate.ViewModels
             finally
             {
                 IsBusy = false;
+                RefreshRestartCooldown();
                 RaiseDisplayProperties();
                 RefreshStartupActivationState();
             }
@@ -687,6 +835,7 @@ namespace HDRCalibrate.ViewModels
             }
             catch (Exception ex)
             {
+                InvalidateProgramGammaApproval();
                 SetError("Erkennung fehlgeschlagen: " + ex.Message);
             }
             finally
@@ -698,6 +847,15 @@ namespace HDRCalibrate.ViewModels
 
         private async Task ApplyAsync()
         {
+            // Recheck before confirmation or any side effects. A countdown is not
+            // authorization; the service independently enforces the same guard.
+            RefreshRestartCooldown();
+            if (IsRestartCooldownActive)
+            {
+                IsError = false;
+                StatusMessage = RestartCooldownText;
+                return;
+            }
             var display = SelectedDisplay;
             if (display == null) return;
             var settings = BuildSettings();
@@ -706,15 +864,25 @@ namespace HDRCalibrate.ViewModels
             var action = settings.IsNeutral() ? "entfernt" : "neu geladen";
             var confirmation = MessageBox.Show(
                 "Für die SDR-Korrektur wird der Desktop Window Manager einmal " + action + ". " +
-                "Der Bildschirm kann dabei kurz schwarz werden. Es werden ausschließlich 16 freigegebene Konstanten " +
-                "in den vier originalen SDR→scRGB-Funktionen geändert; Container, ABI, Aon9-Linkage, native HDR-Shader " +
+                "Der Bildschirm kann dabei kurz schwarz werden. Es werden ausschließlich 24 freigegebene Konstanten " +
+                "in den sechs originalen SDR→scRGB-Funktionen geändert; Container, ABI, Aon9-Linkage, native HDR-Shader " +
                 "und Anwendungen bleiben unverändert. Fortfahren?",
                 "DWM-SDR-Korrektur anwenden",
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Warning,
                 MessageBoxResult.No);
             if (confirmation != MessageBoxResult.Yes) return;
+            // The dialog may stay open for any length of time. Recheck before the
+            // program approval or legacy profiles are touched.
+            RefreshRestartCooldown();
+            if (IsRestartCooldownActive)
+            {
+                IsError = false;
+                StatusMessage = RestartCooldownText;
+                return;
+            }
 
+            InvalidateProgramGammaApproval();
             IsBusy = true;
             IsError = false;
             StatusMessage = "Alte HDR-Calibrate-Profile werden zurückgenommen …";
@@ -723,7 +891,7 @@ namespace HDRCalibrate.ViewModels
                 var restoredProfiles = await Task.Run(RestoreLegacyProfiles);
                 StatusMessage = settings.IsNeutral()
                     ? "DWM wird ungepatcht neu gestartet …"
-                    : "Originalshader und 16 Konstanten werden geprüft; Administratorfreigabe wird benötigt …";
+                    : "Originalshader und 24 Konstanten werden geprüft; Administratorfreigabe wird benötigt …";
 
                 PersistedDwmState committedState = null;
                 var response = settings.IsNeutral()
@@ -747,6 +915,7 @@ namespace HDRCalibrate.ViewModels
                 {
                     _dwmState = committedState
                         ?? throw new InvalidDataException("Der überwachte Apply-Commit enthält keinen DWM-Zustand.");
+                    EstablishProgramGammaApproval(response, committedState, _lastTestedWindowsEnvironment);
                 }
 
                 await RefreshAsync();
@@ -758,23 +927,43 @@ namespace HDRCalibrate.ViewModels
             }
             catch (Exception ex)
             {
-                try
-                {
-                    _dwmState = _dwmStateStore.Load();
-                    UpdateDwmStatus();
-                }
-                catch
-                {
-                    _dwmState = null;
-                }
-                RevokeStartupApproval("Anwenden wurde nicht sicher bestätigt. Neuer Test und erneute Freigabe erforderlich.");
-                SetError("Anwenden fehlgeschlagen: " + FlattenException(ex));
+                HandleApplyFailure(ex);
             }
             finally
             {
                 IsBusy = false;
+                RefreshRestartCooldown();
                 RaiseDisplayProperties();
             }
+        }
+
+        private void HandleApplyFailure(Exception ex)
+        {
+            if (ex is DwmRestartCooldownException)
+            {
+                // The service rejects before creating a request or starting a
+                // helper, so DWM was not touched and the successful test stays
+                // valid. Legacy profiles may already be restored and the program
+                // approval was revoked; the next successful Apply re-establishes it.
+                RefreshRestartCooldown();
+                IsError = false;
+                StatusMessage = IsRestartCooldownActive ? RestartCooldownText
+                    : IsCurrentSettingsTested
+                        ? "Schutzpause beendet. Der erfolgreiche Test bleibt gültig; bitte erneut Anwenden wählen."
+                        : "Schutzpause beendet; bitte erneut Anwenden wählen.";
+                return;
+            }
+            try
+            {
+                _dwmState = _dwmStateStore.Load();
+                UpdateDwmStatus();
+            }
+            catch
+            {
+                _dwmState = null;
+            }
+            RevokeStartupApproval("Anwenden wurde nicht sicher bestätigt. Neuer Test und erneute Freigabe erforderlich.");
+            SetError("Anwenden fehlgeschlagen: " + FlattenException(ex));
         }
 
         private async Task ResetCorrectionAsync()
@@ -788,6 +977,7 @@ namespace HDRCalibrate.ViewModels
                 MessageBoxResult.No);
             if (confirmation != MessageBoxResult.Yes) return;
 
+            InvalidateProgramGammaApproval();
             IsBusy = true;
             IsError = false;
             StatusMessage = "DWM wird zuerst ungepatcht neu gestartet …";
@@ -817,6 +1007,13 @@ namespace HDRCalibrate.ViewModels
 
         private async Task RunTimedTestAsync()
         {
+            RefreshRestartCooldown();
+            if (IsRestartCooldownActive)
+            {
+                IsError = false;
+                StatusMessage = RestartCooldownText;
+                return;
+            }
             var display = SelectedDisplay;
             if (display == null) return;
             var settings = BuildSettings();
@@ -840,6 +1037,15 @@ namespace HDRCalibrate.ViewModels
                 MessageBoxImage.Warning,
                 MessageBoxResult.No);
             if (confirmation != MessageBoxResult.Yes) return;
+            // Like Apply: recheck the guard before the previous proof, the startup
+            // approval or legacy profiles are touched. The service enforces it again.
+            RefreshRestartCooldown();
+            if (IsRestartCooldownActive)
+            {
+                IsError = false;
+                StatusMessage = RestartCooldownText;
+                return;
+            }
 
             IsBusy = true;
             IsError = false;
@@ -899,6 +1105,7 @@ namespace HDRCalibrate.ViewModels
             finally
             {
                 IsBusy = false;
+                RefreshRestartCooldown();
                 RaiseDisplayProperties();
             }
         }
@@ -933,6 +1140,7 @@ namespace HDRCalibrate.ViewModels
         private void LoadSettings(CalibrationSettings settings)
         {
             settings.Validate();
+            InvalidateProgramGammaApproval();
             _gamma = settings.Gamma;
             _applySdrGammaCorrection = settings.ApplySdrGammaCorrection;
             _brightnessPercent = settings.Brightness * 100.0;
@@ -982,6 +1190,10 @@ namespace HDRCalibrate.ViewModels
         {
             var points = new PointCollection();
             var settings = BuildSettings();
+            var approval = Volatile.Read(ref _programGammaApproval);
+            if (approval != null
+                && !string.Equals(approval.SettingsKey, GetSettingsKey(settings), StringComparison.Ordinal))
+                InvalidateProgramGammaApproval();
             const double width = 360.0;
             const double height = 112.0;
             for (var index = 0; index <= 90; index++)
@@ -1001,6 +1213,14 @@ namespace HDRCalibrate.ViewModels
         private void UpdateDwmStatus()
         {
             Set(ref _isDwmPatchActive, DwmPatchService.IsAppliedStateCurrent(_dwmState), nameof(IsDwmPatchActive));
+            var approval = Volatile.Read(ref _programGammaApproval);
+            if (approval != null)
+            {
+                using (var currentProcess = Process.GetCurrentProcess())
+                    if (!_isDwmPatchActive || !CanUseDwm || IsLivePatchBlocked
+                        || !approval.MatchesCurrentState(_dwmState, BuildSettings(), currentProcess.SessionId))
+                        InvalidateProgramGammaApproval();
+            }
             if (_preflight?.LivePatchBlocked == true && _preflight.TimedTestAvailable)
             {
                 DwmStatus = "ÜBERWACHTER TEST BEREIT · ANWENDEN GESPERRT";
@@ -1023,7 +1243,7 @@ namespace HDRCalibrate.ViewModels
             }
             else
             {
-                DwmStatus = "DWM SDR-PFAD KOMPATIBEL · 16 KONSTANTEN";
+                DwmStatus = "DWM SDR-PFAD KOMPATIBEL · 24 KONSTANTEN";
             }
         }
 
@@ -1106,6 +1326,7 @@ namespace HDRCalibrate.ViewModels
 
         private void InvalidateSessionTest()
         {
+            InvalidateProgramGammaApproval();
             _lastTestedSettingsKey = null;
             _lastTestedWindowsEnvironment = null;
             OnPropertyChanged(nameof(IsCurrentSettingsTested));

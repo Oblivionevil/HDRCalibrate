@@ -37,9 +37,27 @@ namespace HDRCalibrate.Tests
             var normalized = ProgramProfileRules.NormalizePath(@"C:\Apps\one\..\brave.exe");
             Check(normalized == @"C:\Apps\brave.exe", "Path was not normalized.");
             var copy = Profile();
+            Check(!copy.ForceSdrGamma, "Gamma forcing must default to disabled.");
+            copy.ForceSdrGamma = true;
+            var explicitCopy = copy.Copy();
+            Check(explicitCopy.ForceSdrGamma && explicitCopy.ColorMode == copy.ColorMode
+                && explicitCopy.ExecutablePath == copy.ExecutablePath, "Copy lost the independent gamma preference.");
+            explicitCopy.ForceSdrGamma = false;
+            Check(copy.ForceSdrGamma, "Copy shares mutable gamma preference state.");
             var validated = ProgramProfileRules.Validate(new[] { copy });
+            Check(validated[0].ForceSdrGamma, "Validation dropped the gamma preference.");
+            validated[0].ForceSdrGamma = false;
             validated[0].ColorMode = ProgramColorMode.Default;
-            Check(copy.ColorMode == ProgramColorMode.Srgb, "Validation did not snapshot the caller's profile.");
+            Check(copy.ColorMode == ProgramColorMode.Srgb && copy.ForceSdrGamma,
+                "Validation did not snapshot the caller's profile.");
+            var arbitraryApp = new ProgramLaunchProfile
+            {
+                ExecutablePath = @"C:\Games\Any Application\application.exe",
+                ForceSdrGamma = true
+            };
+            var arbitraryValidated = ProgramProfileRules.Validate(new[] { arbitraryApp }).Single();
+            Check(arbitraryValidated.ColorMode == ProgramColorMode.Default && arbitraryValidated.ForceSdrGamma,
+                "A non-browser gamma profile must retain the default color mode.");
         }
 
         public static void BrowserRecognition()
@@ -55,13 +73,21 @@ namespace HDRCalibrate.Tests
 
         public static void Persistence()
         {
-            var directory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "program-profile-tests", Guid.NewGuid().ToString("N"));
+            var directory = Path.Combine(Path.GetDirectoryName(typeof(ProgramProfileTests).Assembly.Location),
+                "program-profile-tests", Guid.NewGuid().ToString("N"));
             var store = new ProgramProfileStore(directory);
             Check(store.Load().Count == 0 && !Directory.Exists(directory), "Reading absent profiles created files.");
             store.Save(new[] { Profile() });
-            Check(store.Load().Single().ColorMode == ProgramColorMode.Srgb, "SDR mode was not persisted.");
+            Check(store.Load().Single().ColorMode == ProgramColorMode.Srgb && !store.Load().Single().ForceSdrGamma,
+                "SDR mode or the safe default gamma preference was not persisted.");
+            var gammaProfile = Profile();
+            gammaProfile.ForceSdrGamma = true;
+            store.Save(new[] { gammaProfile });
+            Check(new ProgramProfileStore(directory).Load().Single().ForceSdrGamma,
+                "Explicit gamma preference did not survive store recreation.");
             store.Save(new[] { Profile(ProgramColorMode.ScrgbLinear) });
             Check(new ProgramProfileStore(directory).Load().Single().ColorMode == ProgramColorMode.ScrgbLinear, "Mode did not survive store recreation.");
+            Check(!store.Load().Single().ForceSdrGamma, "Disabling gamma was not persisted.");
             Check(File.Exists(Path.Combine(directory, "program-profiles.xml.bak")), "Atomic save did not retain a backup.");
             var current = File.ReadAllBytes(Path.Combine(directory, "program-profiles.xml"));
             var duplicate = Profile();
@@ -72,11 +98,22 @@ namespace HDRCalibrate.Tests
             Check(!Directory.GetFiles(directory, "*.tmp").Any(), "Temporary write residue remains.");
             store.Save(new ProgramLaunchProfile[0]);
             Check(store.Load().Count == 0, "Removing all profiles did not persist.");
+
+            var path = Path.Combine(directory, "program-profiles.xml");
+            var legacyXml = "<ProgramProfilesDocument><SchemaVersion>1</SchemaVersion><Profiles>"
+                + "<ProgramLaunchProfile><ExecutablePath>C:\\Apps\\brave.exe</ExecutablePath>"
+                + "<ColorMode>Srgb</ColorMode></ProgramLaunchProfile></Profiles></ProgramProfilesDocument>";
+            File.WriteAllText(path, legacyXml);
+            var legacy = store.Load().Single();
+            Check(legacy.ColorMode == ProgramColorMode.Srgb && !legacy.ForceSdrGamma,
+                "Legacy profile loading must preserve the browser mode and default gamma to disabled.");
+            Check(File.ReadAllText(path) == legacyXml, "Loading a legacy profile unexpectedly rewrote the file.");
         }
 
         public static void CorruptStore()
         {
-            var directory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "program-profile-tests", Guid.NewGuid().ToString("N"));
+            var directory = Path.Combine(Path.GetDirectoryName(typeof(ProgramProfileTests).Assembly.Location),
+                "program-profile-tests", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(directory);
             var path = Path.Combine(directory, "program-profiles.xml");
             var store = new ProgramProfileStore(directory);
@@ -84,6 +121,9 @@ namespace HDRCalibrate.Tests
             {
                 "<broken>",
                 "<ProgramProfilesDocument><SchemaVersion>2</SchemaVersion><Profiles /></ProgramProfilesDocument>",
+                "<ProgramProfilesDocument><SchemaVersion>1</SchemaVersion><Profiles><ProgramLaunchProfile>"
+                    + "<ExecutablePath>C:\\Apps\\application.exe</ExecutablePath><ColorMode>Default</ColorMode>"
+                    + "<ForceSdrGamma>not-a-boolean</ForceSdrGamma></ProgramLaunchProfile></Profiles></ProgramProfilesDocument>",
                 "<!DOCTYPE x [<!ENTITY e SYSTEM 'file:///C:/not-read'>]><ProgramProfilesDocument>&e;</ProgramProfilesDocument>"
             })
             {
@@ -100,10 +140,16 @@ namespace HDRCalibrate.Tests
                 _ => false, info => started = info, () => false);
             foreach (var mode in new[] { ProgramColorMode.Default, ProgramColorMode.Srgb, ProgramColorMode.ScrgbLinear })
             {
-                launcher.Launch(Profile(mode));
-                Check(started.FileName == Profile().ExecutablePath, "The executable path was changed or shell-quoted.");
-                Check(started.Arguments == ProgramProfileRules.Arguments(mode), "Wrong launch arguments.");
-                Check(!started.UseShellExecute && started.WorkingDirectory == @"C:\Program Files\Example Browser", "Launch must not use a command shell.");
+                foreach (var forceGamma in new[] { false, true })
+                {
+                    var profile = Profile(mode);
+                    profile.ForceSdrGamma = forceGamma;
+                    launcher.Launch(profile);
+                    Check(started.FileName == Profile().ExecutablePath, "The executable path was changed or shell-quoted.");
+                    Check(started.Arguments == ProgramProfileRules.Arguments(mode),
+                        "Gamma forcing must not add or replace a browser launch argument.");
+                    Check(!started.UseShellExecute && started.WorkingDirectory == @"C:\Program Files\Example Browser", "Launch must not use a command shell.");
+                }
             }
         }
 
@@ -117,6 +163,11 @@ namespace HDRCalibrate.Tests
                 Reject(() => new ProgramProfileLauncher(supported, _ => true, launch, () => elevated, launch).Launch(Profile()));
                 Reject(() => new ProgramProfileLauncher(_ => new ProgramExecutableInfo(), _ => false, launch, () => elevated, launch).Launch(Profile()));
                 Reject(() => new ProgramProfileLauncher(supported, _ => false, launch, () => elevated, launch).Launch(Profile((ProgramColorMode)999)));
+                var gammaProfile = Profile(ProgramColorMode.Default);
+                gammaProfile.ExecutablePath = @"C:\Games\Any Application\application.exe";
+                gammaProfile.ForceSdrGamma = true;
+                Reject(() => new ProgramProfileLauncher(_ => new ProgramExecutableInfo(), _ => false, launch,
+                    () => elevated, launch).Launch(gammaProfile));
             }
             Check(launchCount == 0, "A refused operation reached Process.Start.");
         }

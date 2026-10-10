@@ -1,5 +1,22 @@
 # Third-party notices
 
+## MinHook 1.3.4
+
+The optional native SDR-gamma hook statically links MinHook from the exact
+upstream commit c3fcafdc10146beb5919319d0683e44e3c30d537:
+https://github.com/TsudaKageyu/minhook/tree/c3fcafdc10146beb5919319d0683e44e3c30d537
+
+MinHook - The Minimalistic API Hooking Library for x64/x86
+Copyright (C) 2009-2017 Tsuda Kageyu. All rights reserved.
+
+Its Hacker Disassembler Engine components contain portions
+Copyright (c) 2008-2009, Vyacheslav Patkov. All rights reserved.
+
+The complete, unmodified upstream license, including both disassembler notices,
+conditions and disclaimers, is included in
+Native\1.7.3\MinHook-LICENSE.txt beside the native hook DLL. Retain that license
+when redistributing the native component.
+
 ## dwm_eotf_rs
 
 The DWM process lifecycle, recursive in-memory DXBC inspection approach and

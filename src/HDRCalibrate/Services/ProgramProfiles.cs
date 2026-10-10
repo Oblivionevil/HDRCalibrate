@@ -21,11 +21,14 @@ namespace HDRCalibrate.Services
     {
         public string ExecutablePath { get; set; }
         public ProgramColorMode ColorMode { get; set; }
+        // Stored eligibility only. Loading or launching a profile never activates gamma.
+        public bool ForceSdrGamma { get; set; }
 
         public ProgramLaunchProfile Copy() => new ProgramLaunchProfile
         {
             ExecutablePath = ExecutablePath,
-            ColorMode = ColorMode
+            ColorMode = ColorMode,
+            ForceSdrGamma = ForceSdrGamma
         };
     }
 
@@ -97,7 +100,12 @@ namespace HDRCalibrate.Services
                 Arguments(profile.ColorMode);
                 if (!paths.Add(path)) throw new InvalidDataException("Das Programm steht mehrfach in der Liste.");
                 if (result.Count >= 128) throw new InvalidDataException("Maximal 128 Programme sind erlaubt.");
-                result.Add(new ProgramLaunchProfile { ExecutablePath = path, ColorMode = profile.ColorMode });
+                result.Add(new ProgramLaunchProfile
+                {
+                    ExecutablePath = path,
+                    ColorMode = profile.ColorMode,
+                    ForceSdrGamma = profile.ForceSdrGamma
+                });
             }
             return result;
         }
@@ -202,7 +210,7 @@ namespace HDRCalibrate.Services
                 result.Name = name ?? result.Name;
                 result.Version = info.ProductVersion;
                 result.IsSupported = name != null;
-                result.Status = name == null ? "Nicht unterstütztes Programm – Start gesperrt"
+                result.Status = name == null ? "Selbst starten · SDR-Gamma separat testen"
                     : "Chromium-Startparameter · " + result.Version;
             }
             catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is Win32Exception)
