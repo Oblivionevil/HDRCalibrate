@@ -16,7 +16,7 @@ namespace HDRCalibrate.Tests
     /// </summary>
     internal static class SetupTests
     {
-        private const string Version = "1.7.5";
+        private const string Version = "1.8.0";
 
         internal sealed class MemoryRegistry : ISetupRegistry
         {

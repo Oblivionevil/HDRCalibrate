@@ -47,6 +47,8 @@ namespace HDRCalibrate.Dwm
         public string Message { get; set; }
         public int DwmProcessId { get; set; }
         public string DwmCoreVersion { get; set; }
+        /// <summary>Preflight only: the dwmcore.dll is one of the checked builds.</summary>
+        public bool DwmCoreVerifiedBuild { get; set; }
         public long DwmStartTimeUtcTicks { get; set; }
         public int PatchedShaderCount { get; set; }
         public int PatchedConstantVectorCount { get; set; }
@@ -80,6 +82,8 @@ namespace HDRCalibrate.Dwm
         public int ValidatedSdrShaderCount { get; set; }
         public int ValidatedParentLibraryCount { get; set; }
         public string DwmCoreSha256 { get; set; }
+        /// <summary>One of the builds this release was checked against (informational).</summary>
+        public bool IsVerifiedBuild { get; set; }
         public string Reason { get; set; }
     }
 

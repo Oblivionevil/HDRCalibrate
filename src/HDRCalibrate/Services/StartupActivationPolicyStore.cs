@@ -151,10 +151,10 @@ namespace HDRCalibrate.Services
             testedWindowsEnvironment = testedWindowsEnvironment.Clone();
             testedWindowsEnvironment.Validate();
             var currentWindowsEnvironment = CaptureCurrentWindowsEnvironment(windowsEnvironmentIdentityProvider);
+            // The successful supervised test proves the shader manifest of exactly
+            // this file; the environment identity keeps the approval bound to it.
             if (!testedWindowsEnvironment.Matches(currentWindowsEnvironment))
                 throw new InvalidDataException("Windows oder seine DWM-Komponenten wurden während des Tests geändert. Bitte erneut testen.");
-            if (!DwmCoreInspector.IsSupportedBuild(testResponse.DwmCoreVersion, testedWindowsEnvironment.DwmCoreSha256))
-                throw new InvalidDataException("Die getestete Windows-DWM-Komponente ist nicht für diese Programmversion freigegeben.");
 
             var policy = new PersistedStartupActivationPolicy
             {
@@ -275,7 +275,6 @@ namespace HDRCalibrate.Services
                 ValidateStoredPolicy(policy, false);
                 return string.Equals(policy.AppVersion, appVersion, StringComparison.Ordinal)
                     && string.Equals(policy.HelperVersion, helperVersion, StringComparison.Ordinal)
-                    && DwmCoreInspector.IsSupportedBuild(policy.DwmCoreVersion, policy.DwmCoreSha256)
                     && string.Equals(policy.PatchImplementationId, DwmPatchSafety.PatchImplementationId, StringComparison.Ordinal)
                     && policy.WindowsEnvironment.Matches(CaptureCurrentWindowsEnvironment(windowsEnvironmentIdentityProvider));
             }

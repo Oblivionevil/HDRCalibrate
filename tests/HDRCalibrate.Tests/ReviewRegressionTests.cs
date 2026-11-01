@@ -301,7 +301,7 @@ namespace HDRCalibrate.Tests
             var install = Path.Combine(baseDirectory, "Install");
             var outside = Path.Combine(baseDirectory, "Outside");
             var link = Path.Combine(install, "Native");
-            var victim = Path.Combine(outside, "1.7.5", "HDRCalibrate.SelectiveDwmHook.dll");
+            var victim = Path.Combine(outside, "1.8.0", "HDRCalibrate.SelectiveDwmHook.dll");
             try
             {
                 Directory.CreateDirectory(install);
@@ -310,7 +310,7 @@ namespace HDRCalibrate.Tests
                 var source = Path.Combine(baseDirectory, "new.dll");
                 File.WriteAllText(source, "new");
                 Check(CreateJunction(link, outside), "The junction below the install directory could not be created.");
-                var relative = @"Native\1.7.5\HDRCalibrate.SelectiveDwmHook.dll";
+                var relative = @"Native\1.8.0\HDRCalibrate.SelectiveDwmHook.dll";
                 var transaction = new FileTransaction(install, null);
                 Expect<IOException>(() => transaction.Put(source, relative), "Setup wrote through a junction below its root.");
                 Check(!transaction.TryRemove(relative), "Setup moved a file reached through a junction.");
@@ -367,10 +367,14 @@ namespace HDRCalibrate.Tests
 
         public static void ProgramGammaReportsThatNoBuildIsReleased()
         {
-            Check(!ProgramGammaBuildSupport.HasReachableBuild,
-                "A build is listed for both the native hook and the global correction; update the message.");
-            Check(ProgramGammaBuildSupport.GetSystemUnavailableReason() == ProgramGammaBuildSupport.NoReleasedBuildMessage,
-                "Program gamma did not report that no Windows build is released for it.");
+            var version = FileVersionInfo.GetVersionInfo(DwmCoreInspector.GetSystemDwmCorePath()).FileVersion;
+            var reason = ProgramGammaBuildSupport.GetSystemUnavailableReason();
+            if (!ProgramGammaBuildSupport.IsSupportedVersion(version))
+                Check(reason == ProgramGammaBuildSupport.UnsupportedMessage,
+                    "Program gamma did not report that this Windows build has no checked native hook.");
+            else
+                Check(reason == null || reason == ProgramGammaBuildSupport.GlobalUnavailableMessage,
+                    "Program gamma on the hook build reported an unexpected reason: " + reason);
         }
 
         private static bool CreateJunction(string link, string target)

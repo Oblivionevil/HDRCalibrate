@@ -1,7 +1,6 @@
 using HDRCalibrate.Dwm;
 using System;
 using System.Diagnostics;
-using System.Linq;
 
 namespace HDRCalibrate.Services
 {
@@ -18,17 +17,9 @@ namespace HDRCalibrate.Services
         public const string UnsupportedMessage =
             "Gamma-Erzwingen für einzelne Programme ist für diese Windows-DWM-Version noch nicht freigegeben. " +
             "Die globale SDR-Korrektur wird dadurch nicht deaktiviert.";
-        public const string NoReleasedBuildMessage =
-            "Gamma-Erzwingen für einzelne Programme ist in dieser Version auf keinem Windows-Build verfügbar: " +
-            "Der native Hook ist nur für 26100.8875 geprüft, die dafür nötige globale SDR-Korrektur nur für " +
-            "26100.9278 und 26100.9949. Die globale SDR-Korrektur wird dadurch nicht deaktiviert.";
-
-        /// <summary>
-        /// Program gamma requires a committed global apply first, so a hook build
-        /// without a released global build is unreachable.
-        /// </summary>
-        public static bool HasReachableBuild => DwmCoreInspector.SupportedBuilds.Any(build =>
-            IsSupported(build.Version, build.Sha256));
+        public const string GlobalUnavailableMessage =
+            "Gamma-Erzwingen für einzelne Programme setzt eine aktive globale SDR-Korrektur voraus, " +
+            "die auf diesem Windows-Build nicht verfügbar ist.";
 
         public static bool IsSupportedVersion(string version) =>
             string.Equals(version, SupportedDwmCoreVersion, StringComparison.Ordinal);
@@ -43,11 +34,12 @@ namespace HDRCalibrate.Services
         /// </summary>
         public static string GetSystemUnavailableReason()
         {
-            if (!HasReachableBuild) return NoReleasedBuildMessage;
             try
             {
                 var version = FileVersionInfo.GetVersionInfo(DwmCoreInspector.GetSystemDwmCorePath()).FileVersion;
-                return IsSupportedVersion(version) ? null : UnsupportedMessage;
+                if (!IsSupportedVersion(version)) return UnsupportedMessage;
+                // Program gamma needs a committed global apply on this very build.
+                return DwmCoreInspector.InspectSystem().IsCompatible ? null : GlobalUnavailableMessage;
             }
             catch (Exception)
             {

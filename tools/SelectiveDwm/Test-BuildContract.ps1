@@ -150,7 +150,7 @@ foreach ($builder in @('Build-SelectiveDwm.ps1', 'Hook\BuildHook.ps1', 'Controll
     $path = Join-Path $PSScriptRoot $builder
     Check ($builder + '-candidate-requires-explicit-output') (Rejects { & $path -DwmCoreBuild '26100.9278' })
     Check ($builder + '-candidate-rejects-frozen-v3') (Rejects { & $path -DwmCoreBuild '26100.9278' -OutputDirectory (Join-Path $repository 'artifacts\selective-dwm-20260906\v3\bin') })
-    Check ($builder + '-candidate-rejects-versioned-payload') (Rejects { & $path -DwmCoreBuild '26100.9278' -OutputDirectory (Join-Path $repository 'artifacts\program-gamma-native\1.7.5') })
+    Check ($builder + '-candidate-rejects-versioned-payload') (Rejects { & $path -DwmCoreBuild '26100.9278' -OutputDirectory (Join-Path $repository 'artifacts\program-gamma-native\1.8.0') })
     Check ($builder + '-candidate-rejects-existing-output') (Rejects { & $path -DwmCoreBuild '26100.9278' -OutputDirectory $OutputDirectory })
     Check ($builder + '-rejects-unknown-build') (Rejects { & $path -DwmCoreBuild '26100.9999' -OutputDirectory $OutputDirectory })
 }

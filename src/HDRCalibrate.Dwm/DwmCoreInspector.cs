@@ -49,9 +49,9 @@ namespace HDRCalibrate.Dwm
     }
 
     /// <summary>One exactly pinned dwmcore.dll: version string as Windows reports it for System32, and whole-file SHA-256.</summary>
-    public sealed class SupportedDwmCoreBuild
+    public sealed class VerifiedDwmCoreBuild
     {
-        public SupportedDwmCoreBuild(string version, string sha256)
+        public VerifiedDwmCoreBuild(string version, string sha256)
         {
             Version = version;
             Sha256 = sha256;
@@ -66,24 +66,28 @@ namespace HDRCalibrate.Dwm
     public static class DwmCoreInspector
     {
         /// <summary>
-        /// Every build here carries the identical SDR shader manifest below; a new
-        /// entry needs that proof (all six exports, parents, indices and the full
-        /// manifest validation) against the exact file before it is added.
+        /// Builds this release was checked against. They are informational only:
+        /// compatibility follows the exact SDR shader manifest below (six export
+        /// checksums, three parent library checksums, slots, indices and full
+        /// reflection), so a Windows update that leaves those bytes unchanged
+        /// needs no new HDR Calibrate version. Every build still needs the
+        /// supervised 5-second test before Apply, and approvals stay bound to the
+        /// exact tested file.
         /// </summary>
-        public static readonly IReadOnlyList<SupportedDwmCoreBuild> SupportedBuilds = new[]
+        public static readonly IReadOnlyList<VerifiedDwmCoreBuild> VerifiedBuilds = new[]
         {
-            new SupportedDwmCoreBuild("10.0.26100.9278 (WinBuild.160101.0800)",
+            new VerifiedDwmCoreBuild("10.0.26100.9278 (WinBuild.160101.0800)",
                 "40579ECFA394395677FEC84014C32BA5495F334B6D96C5653FD5CAA129DC1222"),
             // Binary 10.0.26100.9711 (KB5127690); Windows reports the resource
             // version 9949 for System32. All 458 DXBC blobs equal 9278's.
-            new SupportedDwmCoreBuild("10.0.26100.9949 (WinBuild.160101.0800)",
+            new VerifiedDwmCoreBuild("10.0.26100.9949 (WinBuild.160101.0800)",
                 "32FAD20F0EFE38789E20130881E5F003AD4D8283926546BA22F4FE72E510E932")
         };
 
-        /// <summary>Version and hash must belong to the same pinned build.</summary>
-        public static bool IsSupportedBuild(string version, string sha256)
+        /// <summary>Version and hash must belong to the same checked build.</summary>
+        public static bool IsVerifiedBuild(string version, string sha256)
         {
-            return SupportedBuilds.Any(build =>
+            return VerifiedBuilds.Any(build =>
                 string.Equals(build.Version, version, StringComparison.Ordinal)
                 && string.Equals(build.Sha256, sha256, StringComparison.OrdinalIgnoreCase));
         }
@@ -139,20 +143,29 @@ namespace HDRCalibrate.Dwm
                 result.DwmCoreVersion = FileVersionInfo.GetVersionInfo(fullPath).FileVersion;
                 var image = File.ReadAllBytes(fullPath);
                 result.DwmCoreSha256 = ComputeSha256(image);
-                if (!IsSupportedBuild(result.DwmCoreVersion, result.DwmCoreSha256))
-                    throw new NotSupportedException(
-                        "Diese dwmcore.dll-Version ist nicht freigegeben. Erwartet: " +
-                        string.Join(" oder ", SupportedBuilds) + "; gefunden: " + result.DwmCoreVersion +
-                        " / " + result.DwmCoreSha256 + ".");
+                result.IsVerifiedBuild = IsVerifiedBuild(result.DwmCoreVersion, result.DwmCoreSha256);
 
-                var validation = ValidateShaderManifest(image);
+                DwmShaderManifestValidation validation;
+                try
+                {
+                    validation = ValidateShaderManifest(image);
+                }
+                catch (InvalidDataException ex)
+                {
+                    throw new NotSupportedException(
+                        "Diese dwmcore.dll (" + result.DwmCoreVersion + ") enthält nicht das geprüfte SDR-Shadermanifest: " +
+                        ex.Message + " Dieses Windows-Update braucht eine neue HDR-Calibrate-Version.", ex);
+                }
                 result.TargetShaderCount = Targets.Length;
                 result.ValidatedSdrShaderCount = validation.Shaders.Count;
                 result.ValidatedParentLibraryCount = validation.Parents.Count;
                 result.IsCompatible = validation.Shaders.Count == AllSdrShaders.Length && validation.Parents.Count == 3;
-                result.Reason = result.IsCompatible
-                    ? "Alle sechs DWM-SDR→scRGB-Exporte (FL9.1, FL9.3 und FL10) in drei Profilbibliotheken wurden per Hash, Struktur und D3D-Reflection als Patchziele validiert."
-                    : "Das erwartete DWM-SDR-Shadermanifest ist unvollständig.";
+                result.Reason = !result.IsCompatible
+                    ? "Das erwartete DWM-SDR-Shadermanifest ist unvollständig."
+                    : "Alle sechs DWM-SDR→scRGB-Exporte (FL9.1, FL9.3 und FL10) in drei Profilbibliotheken wurden per Hash, Struktur und D3D-Reflection als Patchziele validiert." +
+                        (result.IsVerifiedBuild
+                            ? string.Empty
+                            : " Neuer Windows-Build: Die SDR-Shader sind byte-identisch mit dem geprüften Manifest; der überwachte 5-Sekunden-Test vor dem Anwenden ist hier besonders wichtig.");
             }
             catch (Exception ex)
             {

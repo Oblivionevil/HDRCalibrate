@@ -883,7 +883,11 @@ namespace HDRCalibrate.ViewModels
                 {
                     StatusMessage = (detected.Count == 0
                         ? "Windows meldet keinen aktiven Monitor."
-                        : $"{detected.Count} aktiver Monitor erkannt; DWM-SDR-Pfad statisch verifiziert.") + legacyStateWarning;
+                        : $"{detected.Count} aktiver Monitor erkannt; DWM-SDR-Pfad statisch verifiziert.")
+                        + (_preflight.DwmCoreVerifiedBuild
+                            ? string.Empty
+                            : " Neuer Windows-Build mit unveränderten SDR-Shadern: vor dem Anwenden 5 Sekunden testen.")
+                        + legacyStateWarning;
                 }
             }
             catch (Exception ex)

@@ -51,6 +51,7 @@ namespace HDRCalibrate.Dwm
                         TimedTestAvailable = DwmPatchSafety.TimedTestEnabled,
                         Message = "DWM-SDR-Shaderprüfung erfolgreich; neutrale Werte benötigen keinen Patch.",
                         DwmCoreVersion = compatibility.DwmCoreVersion,
+                        DwmCoreVerifiedBuild = compatibility.IsVerifiedBuild,
                         PatchPlanFingerprint = string.Empty,
                         Diagnostics = diagnostics
                     };
@@ -75,6 +76,7 @@ namespace HDRCalibrate.Dwm
                     TimedTestAvailable = DwmPatchSafety.TimedTestEnabled,
                     Message = "DWM-SDR-Shaderprüfung erfolgreich.",
                     DwmCoreVersion = compatibility.DwmCoreVersion,
+                    DwmCoreVerifiedBuild = compatibility.IsVerifiedBuild,
                     PatchedShaderCount = rewriteReport.PatchedShaderCount,
                     PatchedConstantVectorCount = rewriteReport.PatchedConstantVectorCount,
                     ChangedByteCount = rewriteReport.ChangedByteCount,

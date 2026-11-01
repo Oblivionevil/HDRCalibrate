@@ -24,7 +24,7 @@ namespace HDRCalibrate.Tests
                 Run("SDR-only adjustment math", TestSdrAdjustmentMath);
                 Run("Pinned dwmcore builds bind version, hash and plan", TestPinnedDwmCoreBuilds);
                 Run("Installed dwmcore six-export manifest", TestDwmCoreCompatibility);
-                Run("DWM whole-file identity rejects an altered supported image", TestDwmCoreAlteredFileRejected);
+                Run("DWM compatibility follows the SDR shader manifest, not the file hash", TestDwmCoreAlteredFileRejected);
                 Run("DWM ABI-preserving constant patch dry-run", TestDwmShaderRewrite);
                 Run("All non-target DWM shader bytes remain unchanged", TestDwmNonTargetShadersUnchanged);
                 Run("DWM constant patch boundary matrix", TestDwmShaderRewriteBoundaryMatrix);
@@ -362,45 +362,47 @@ namespace HDRCalibrate.Tests
 
         // Synthetic fixtures need one consistent version/hash pair. Some tests mix
         // them with a real read-only preflight, so prefer the installed pinned build.
-        private static readonly Lazy<SupportedDwmCoreBuild> InstalledOrFirstPinnedBuild = new Lazy<SupportedDwmCoreBuild>(() =>
+        private static readonly Lazy<VerifiedDwmCoreBuild> InstalledOrFirstPinnedBuild = new Lazy<VerifiedDwmCoreBuild>(() =>
         {
             var installed = DwmCoreInspector.InspectSystem();
-            return DwmCoreInspector.SupportedBuilds.FirstOrDefault(build =>
+            return DwmCoreInspector.VerifiedBuilds.FirstOrDefault(build =>
                     string.Equals(build.Version, installed.DwmCoreVersion, StringComparison.Ordinal)
                     && string.Equals(build.Sha256, installed.DwmCoreSha256, StringComparison.OrdinalIgnoreCase))
-                ?? DwmCoreInspector.SupportedBuilds[0];
+                ?? (installed.IsCompatible
+                    ? new VerifiedDwmCoreBuild(installed.DwmCoreVersion, installed.DwmCoreSha256)
+                    : DwmCoreInspector.VerifiedBuilds[0]);
         });
 
-        private static SupportedDwmCoreBuild TestDwmCoreBuild => InstalledOrFirstPinnedBuild.Value;
+        private static VerifiedDwmCoreBuild TestDwmCoreBuild => InstalledOrFirstPinnedBuild.Value;
 
         private static void TestPinnedDwmCoreBuilds()
         {
-            Assert(DwmCoreInspector.SupportedBuilds.Count == 2
-                && DwmCoreInspector.IsSupportedBuild("10.0.26100.9278 (WinBuild.160101.0800)",
+            Assert(DwmCoreInspector.VerifiedBuilds.Count == 2
+                && DwmCoreInspector.IsVerifiedBuild("10.0.26100.9278 (WinBuild.160101.0800)",
                     "40579ECFA394395677FEC84014C32BA5495F334B6D96C5653FD5CAA129DC1222")
-                && DwmCoreInspector.IsSupportedBuild("10.0.26100.9949 (WinBuild.160101.0800)",
+                && DwmCoreInspector.IsVerifiedBuild("10.0.26100.9949 (WinBuild.160101.0800)",
                     "32fad20f0efe38789e20130881e5f003ad4d8283926546ba22f4fe72e510e932"),
-                "The reviewed 9278 and 9949 builds are not both pinned.");
-            // A version may only pass together with its own file hash.
-            Assert(!DwmCoreInspector.IsSupportedBuild("10.0.26100.9278 (WinBuild.160101.0800)",
+                "The checked 9278 and 9949 builds are not both listed.");
+            // A version is only labelled checked together with its own file hash.
+            Assert(!DwmCoreInspector.IsVerifiedBuild("10.0.26100.9278 (WinBuild.160101.0800)",
                     "32FAD20F0EFE38789E20130881E5F003AD4D8283926546BA22F4FE72E510E932")
-                && !DwmCoreInspector.IsSupportedBuild("10.0.26100.9949 (WinBuild.160101.0800)",
+                && !DwmCoreInspector.IsVerifiedBuild("10.0.26100.9949 (WinBuild.160101.0800)",
                     "40579ECFA394395677FEC84014C32BA5495F334B6D96C5653FD5CAA129DC1222")
-                && !DwmCoreInspector.IsSupportedBuild("10.0.26100.9711 (WinBuild.160101.0800)",
+                && !DwmCoreInspector.IsVerifiedBuild("10.0.26100.9711 (WinBuild.160101.0800)",
                     "32FAD20F0EFE38789E20130881E5F003AD4D8283926546BA22F4FE72E510E932")
-                && !DwmCoreInspector.IsSupportedBuild(null, null),
-                "A version was accepted with another build's hash.");
+                && !DwmCoreInspector.IsVerifiedBuild(null, null),
+                "A version was labelled checked with another build's hash.");
 
             // The plan fingerprint binds to the build: identical writes on another
             // pinned build never reuse an approval.
             var image = new byte[64];
             image[10] = 1;
             var ranges = new[] { new DwmWriteRange { Offset = 10, Length = 1 } };
-            var first = ComputePatchPlanFingerprint(DwmCoreInspector.SupportedBuilds[0].Sha256, image, ranges);
-            Assert(first == ComputePatchPlanFingerprint(DwmCoreInspector.SupportedBuilds[0].Sha256.ToLowerInvariant(), image, ranges),
+            var first = ComputePatchPlanFingerprint(DwmCoreInspector.VerifiedBuilds[0].Sha256, image, ranges);
+            Assert(first == ComputePatchPlanFingerprint(DwmCoreInspector.VerifiedBuilds[0].Sha256.ToLowerInvariant(), image, ranges),
                 "The plan fingerprint depends on hash letter case.");
-            Assert(first != ComputePatchPlanFingerprint(DwmCoreInspector.SupportedBuilds[1].Sha256, image, ranges),
-                "Identical writes on two pinned builds share one plan fingerprint.");
+            Assert(first != ComputePatchPlanFingerprint(DwmCoreInspector.VerifiedBuilds[1].Sha256, image, ranges),
+                "Identical writes on two builds share one plan fingerprint.");
 
             var policy = StartupActivationPolicy.CreateFromSuccessfulTest(
                 CreateTestStartupSettings(),
@@ -409,11 +411,32 @@ namespace HDRCalibrate.Tests
                 new MutableWindowsEnvironmentIdentityProvider(CreateTestWindowsEnvironment()));
             Assert(StartupActivationPolicy.IsValidForCurrentBuild(policy, "1.0.0.0", "1.0.0.0",
                 new MutableWindowsEnvironmentIdentityProvider(CreateTestWindowsEnvironment())),
-                "A test on a pinned build did not produce a valid startup approval.");
-            policy.DwmCoreVersion = DwmCoreInspector.SupportedBuilds.First(build => build != TestDwmCoreBuild).Version;
+                "A test on a checked build did not produce a valid startup approval.");
+
+            // A Windows update with unchanged SDR shaders needs a new test, not a new version.
+            var updatedEnvironment = CreateTestWindowsEnvironment();
+            updatedEnvironment.UpdateBuildRevision += 1;
+            updatedEnvironment.DwmCoreSha256 = new string('C', 64);
+            var updatedPreflight = CreateTestStartupPreflight();
+            updatedPreflight.DwmCoreVersion = "10.0.26100.9999 (WinBuild.160101.0800)";
+            var updated = StartupActivationPolicy.CreateFromSuccessfulTest(
+                CreateTestStartupSettings(),
+                CreateSuccessfulTimedTestResponse(updatedPreflight),
+                "1.0.0.0", "1.0.0.0", false, updatedEnvironment,
+                new MutableWindowsEnvironmentIdentityProvider(updatedEnvironment));
+            Assert(StartupActivationPolicy.IsValidForCurrentBuild(updated, "1.0.0.0", "1.0.0.0",
+                new MutableWindowsEnvironmentIdentityProvider(updatedEnvironment)),
+                "A successful test on a new Windows build did not produce a startup approval.");
+            // The approval of the old build never carries over to the update.
             Assert(!StartupActivationPolicy.IsValidForCurrentBuild(policy, "1.0.0.0", "1.0.0.0",
-                new MutableWindowsEnvironmentIdentityProvider(CreateTestWindowsEnvironment())),
-                "A startup approval with mismatched version and hash stayed valid.");
+                new MutableWindowsEnvironmentIdentityProvider(updatedEnvironment)),
+                "A startup approval survived a Windows update without a new test.");
+            policy.Enabled = true;
+            Assert(StartupActivationPolicy.Evaluate(policy, true, "1.0.0.0", "1.0.0.0",
+                    updatedPreflight, policy.SettingsFingerprint, true, false, null, false,
+                    new MutableWindowsEnvironmentIdentityProvider(CreateTestWindowsEnvironment()))
+                == StartupActivationDecision.ApprovalInvalid,
+                "A startup approval accepted a preflight of another dwmcore version.");
         }
 
         private static void TestDwmCoreCompatibility()
@@ -423,10 +446,10 @@ namespace HDRCalibrate.Tests
             Assert(info.TargetShaderCount == 6, "Expected all six SDR target shaders, including FL10.");
             Assert(info.ValidatedSdrShaderCount == 6, "Expected exactly six profiled SDR exports.");
             Assert(info.ValidatedParentLibraryCount == 3, "Expected exactly three SDR profile libraries.");
-            Assert(DwmCoreInspector.IsSupportedBuild(info.DwmCoreVersion, info.DwmCoreSha256),
-                "dwmcore.dll version and SHA-256 are not one pinned build.");
+            Assert(info.IsVerifiedBuild == DwmCoreInspector.IsVerifiedBuild(info.DwmCoreVersion, info.DwmCoreSha256),
+                "The checked-build label does not match the version and SHA-256.");
             Assert(!string.IsNullOrWhiteSpace(info.DwmCoreVersion), "dwmcore.dll has no version.");
-            Console.WriteLine("DWMCORE: " + info.DwmCoreVersion + "; " + info.Reason);
+            Console.WriteLine("DWMCORE: " + info.DwmCoreVersion + (info.IsVerifiedBuild ? " (geprüft)" : " (neu)") + "; " + info.Reason);
         }
 
         private static void TestDwmCoreAlteredFileRejected()
@@ -435,21 +458,45 @@ namespace HDRCalibrate.Tests
             var path = Path.Combine(Path.GetTempPath(), "HDRCalibrate_DwmIdentity_" + Guid.NewGuid().ToString("N") + ".dll");
             try
             {
-                // Keep the original version resource and shader containers intact:
-                // even a change outside their byte ranges must reject the whole image.
-                image[image.Length - 1] ^= 1;
-                File.WriteAllBytes(path, image);
+                // A Windows update that changes other code but not the SDR shader
+                // manifest stays compatible; it is only no longer a checked build.
+                var tail = (byte[])image.Clone();
+                tail[tail.Length - 1] ^= 1;
+                File.WriteAllBytes(path, tail);
                 var result = DwmCoreInspector.InspectFile(path);
-                Assert(!result.IsCompatible, "A changed system-image hash was accepted.");
-                Assert(result.TargetShaderCount == 0 && result.ValidatedSdrShaderCount == 0,
-                    "An unpinned image reached shader approval.");
-                Assert(DwmCoreInspector.SupportedBuilds.All(build => !string.Equals(result.DwmCoreSha256, build.Sha256,
+                Assert(result.IsCompatible && result.ValidatedSdrShaderCount == 6 && !result.IsVerifiedBuild,
+                    "A change outside the SDR shader manifest was rejected or still labelled checked: " + result.Reason);
+                Assert(DwmCoreInspector.VerifiedBuilds.All(build => !string.Equals(result.DwmCoreSha256, build.Sha256,
                     StringComparison.OrdinalIgnoreCase)), "Mutation did not change the whole-file fingerprint.");
+
+                // One changed byte inside an SDR export (its name) breaks the manifest.
+                var name = System.Text.Encoding.ASCII.GetBytes(D3DCompiler.AlphaFunctionName);
+                var at = IndexOf(image, name);
+                Assert(at > 0, "The SDR export name was not found in dwmcore.dll.");
+                var shader = (byte[])image.Clone();
+                shader[at] ^= 0x20;
+                File.WriteAllBytes(path, shader);
+                result = DwmCoreInspector.InspectFile(path);
+                Assert(!result.IsCompatible && result.ValidatedSdrShaderCount == 0
+                    && result.Reason.Contains("neue HDR-Calibrate-Version"),
+                    "A changed SDR shader was accepted: " + result.Reason);
             }
             finally
             {
                 if (File.Exists(path)) File.Delete(path);
             }
+        }
+
+        private static int IndexOf(byte[] haystack, byte[] needle)
+        {
+            for (var index = 0; index <= haystack.Length - needle.Length; index++)
+            {
+                var match = true;
+                for (var offset = 0; offset < needle.Length && match; offset++)
+                    match = haystack[index + offset] == needle[offset];
+                if (match) return index;
+            }
+            return -1;
         }
 
         private static void TestDwmNonTargetShadersUnchanged()

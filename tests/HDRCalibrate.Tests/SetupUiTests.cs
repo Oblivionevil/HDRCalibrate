@@ -57,7 +57,7 @@ namespace HDRCalibrate.Tests
                     var install = new SetupWindow(SetupMode.Install, sandbox.Context, existing, package, sandbox.SetupExecutable, "setup.log");
                     try
                     {
-                        Require(install.Icon != null && install.Title.Contains("1.7.5"), "Icon or title missing.");
+                        Require(install.Icon != null && install.Title.Contains("1.8.0"), "Icon or title missing.");
                         Require(Text(install, "HeadingText") == "HDR Calibrate installieren"
                             && (string)((Button)install.FindName("PrimaryButton")).Content == "Installieren"
                             && ((CheckBox)install.FindName("AutostartCheck")).IsChecked == false
