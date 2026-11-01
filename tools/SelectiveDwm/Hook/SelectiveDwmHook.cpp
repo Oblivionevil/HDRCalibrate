@@ -58,6 +58,10 @@ inline constexpr std::uint32_t kCapabilities = ObserveCandidates | ObserveIndepe
 Session* g_sessions[kMaximumSessions]{};
 LONG g_sessionCount = 0;
 PVOID volatile g_current = nullptr;
+// Every detour increments this before it loads g_current and decrements it
+// after its last session access. A stopped (never republished) session is
+// freed only after this was observed at zero, so no callback can hold it.
+volatile LONG g_inflightCallbacks = 0;
 volatile LONG g_startLock = 0;
 volatile LONG g_hooksInstalled = 0;
 std::uint8_t* g_dwmcore = nullptr;
@@ -413,9 +417,13 @@ LONG __fastcall CandidateHook(void* self, void* visual, const void* rect0, void*
     const void* corners, const void* matrix, std::uint32_t rotation,
     std::uint32_t flags, bool option) {
     const DWORD incomingError = GetLastError();
+    InterlockedIncrement(&g_inflightCallbacks);
     auto* session = CurrentSession();
-    if (!session) return g_candidateOriginal(self, visual, rect0, surface, realization,
-        rect1, rect2, rect3, corners, matrix, rotation, flags, option);
+    if (!session) {
+        InterlockedDecrement(&g_inflightCallbacks);
+        return g_candidateOriginal(self, visual, rect0, surface, realization,
+            rect1, rect2, rect3, corners, matrix, rotation, flags, option);
+    }
     auto* telemetry = &session->shared->telemetry;
     Count(&telemetry->candidateCalls);
     Count(&telemetry->activeCallbacks);
@@ -447,14 +455,19 @@ LONG __fastcall CandidateHook(void* self, void* visual, const void* rect0, void*
     sample.nativeResult = result;
     Record(session, &sample);
     InterlockedDecrement64(Atomic64(&telemetry->activeCallbacks));
+    InterlockedDecrement(&g_inflightCallbacks);
     SetLastError(resultingError);
     return result;
 }
 
 LONG __fastcall IndependentFlipHook(void* self, void* plane, bool enable) {
     const DWORD incomingError = GetLastError();
+    InterlockedIncrement(&g_inflightCallbacks);
     auto* session = CurrentSession();
-    if (!session) return g_flipOriginal(self, plane, enable);
+    if (!session) {
+        InterlockedDecrement(&g_inflightCallbacks);
+        return g_flipOriginal(self, plane, enable);
+    }
     auto* telemetry = &session->shared->telemetry;
     Count(&telemetry->independentFlipCalls);
     Count(&telemetry->activeCallbacks);
@@ -475,6 +488,7 @@ LONG __fastcall IndependentFlipHook(void* self, void* plane, bool enable) {
     sample.nativeResult = result;
     Record(session, &sample);
     InterlockedDecrement64(Atomic64(&telemetry->activeCallbacks));
+    InterlockedDecrement(&g_inflightCallbacks);
     SetLastError(resultingError);
     return result;
 }
@@ -580,6 +594,25 @@ bool VerifyContract() noexcept {
     return true;
 }
 
+// Idempotent. An earlier failed start may already have initialized MinHook,
+// created one hook or enabled part of the queue. Nothing is ever removed or
+// freed here (a thread may already run a detour), so a retry reuses that state
+// and applies only what is still missing.
+DWORD AttachDetours(void* candidateTarget, void* flipTarget) noexcept {
+    auto status = MH_Initialize();
+    if (status != MH_OK && status != MH_ERROR_ALREADY_INITIALIZED) return ERROR_INVALID_FUNCTION;
+    status = MH_CreateHook(candidateTarget, reinterpret_cast<void*>(&CandidateHook),
+                          reinterpret_cast<void**>(&g_candidateOriginal));
+    if (status != MH_OK && !(status == MH_ERROR_ALREADY_CREATED && g_candidateOriginal)) return ERROR_INVALID_FUNCTION;
+    status = MH_CreateHook(flipTarget, reinterpret_cast<void*>(&IndependentFlipHook),
+                          reinterpret_cast<void**>(&g_flipOriginal));
+    if (status != MH_OK && !(status == MH_ERROR_ALREADY_CREATED && g_flipOriginal)) return ERROR_INVALID_FUNCTION;
+    status = MH_QueueEnableHook(candidateTarget);
+    if (status == MH_OK) status = MH_QueueEnableHook(flipTarget);
+    if (status == MH_OK) status = MH_ApplyQueued();
+    return status == MH_OK ? ERROR_SUCCESS : ERROR_INVALID_FUNCTION;
+}
+
 DWORD InstallHooks(Session* session) noexcept {
     if (InterlockedCompareExchange(&g_hooksInstalled, 0, 0)) return ERROR_SUCCESS;
     if (!VerifyContract()) return ERROR_REVISION_MISMATCH;
@@ -587,18 +620,8 @@ DWORD InstallHooks(Session* session) noexcept {
     HMODULE pinned = nullptr;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
         reinterpret_cast<LPCWSTR>(&InstallHooks), &pinned)) return GetLastError();
-    auto status = MH_Initialize();
-    if (status != MH_OK) return ERROR_INVALID_FUNCTION;
-    status = MH_CreateHook(g_dwmcore + contract::kCandidateRva, reinterpret_cast<void*>(&CandidateHook),
-                          reinterpret_cast<void**>(&g_candidateOriginal));
-    if (status != MH_OK) return ERROR_INVALID_FUNCTION;
-    status = MH_CreateHook(g_dwmcore + contract::kIndependentFlipRva, reinterpret_cast<void*>(&IndependentFlipHook),
-                          reinterpret_cast<void**>(&g_flipOriginal));
-    if (status != MH_OK) return ERROR_INVALID_FUNCTION;
-    status = MH_QueueEnableHook(g_dwmcore + contract::kCandidateRva);
-    if (status == MH_OK) status = MH_QueueEnableHook(g_dwmcore + contract::kIndependentFlipRva);
-    if (status == MH_OK) status = MH_ApplyQueued();
-    if (status != MH_OK) return ERROR_INVALID_FUNCTION;
+    const auto error = AttachDetours(g_dwmcore + contract::kCandidateRva, g_dwmcore + contract::kIndependentFlipRva);
+    if (error != ERROR_SUCCESS) return error;
     InterlockedExchange(&g_hooksInstalled, 1);
     return ERROR_SUCCESS;
 }
@@ -612,6 +635,28 @@ void DestroyUnpublishedSession(Session* session) noexcept {
     HeapFree(GetProcessHeap(), 0, session);
 }
 
+// Runs only under g_startLock while no session is published. Stopped sessions
+// were unpublished before; once g_inflightCallbacks is observed at zero no
+// detour can still hold them, and later callbacks cannot load them again.
+// Without a quiescent moment the sessions stay pinned (fail safe).
+void ReclaimStoppedSessions() noexcept {
+    if (!g_sessionCount || CurrentSession()) return;
+    bool quiescent = false;
+    for (unsigned int attempt = 0; attempt != 50 && !quiescent; ++attempt) {
+        quiescent = InterlockedCompareExchange(&g_inflightCallbacks, 0, 0) == 0;
+        if (!quiescent) Sleep(1);
+    }
+    if (!quiescent) return;
+    LONG kept = 0;
+    for (LONG index = 0; index != g_sessionCount; ++index) {
+        auto* session = g_sessions[index];
+        g_sessions[index] = nullptr;
+        if (session && InterlockedCompareExchange(&session->stopped, 0, 0)) DestroyUnpublishedSession(session);
+        else if (session) g_sessions[kept++] = session;
+    }
+    g_sessionCount = kept;
+}
+
 DWORD Start(const StartConfig& config) noexcept {
     if (!ExactHost()) return ERROR_BAD_ENVIRONMENT;
     if (config.size != sizeof(config) || config.version != kProtocolVersion || config.magic != kProtocolMagic ||
@@ -621,6 +666,7 @@ DWORD Start(const StartConfig& config) noexcept {
     if (config.mappingName[kMappingNameCharacters - 1] ||
         wcsncmp(name, prefix, (sizeof(prefix) / sizeof(prefix[0])) - 1) != 0) return ERROR_INVALID_NAME;
     if (CurrentSession()) return ERROR_ALREADY_EXISTS;
+    ReclaimStoppedSessions();
     if (g_sessionCount >= kMaximumSessions) return ERROR_TOO_MANY_SESS;
     auto* session = static_cast<Session*>(HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(Session)));
     if (!session) return ERROR_OUTOFMEMORY;

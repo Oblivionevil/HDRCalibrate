@@ -848,6 +848,10 @@ int wmain(int argc, wchar_t** argv) {
         surfaceRejected ? "true" : "false",
         started ? "true" : "false");
     UnmapViewOfFile(shared);
+    // A start the hook explicitly rejected changed nothing; report why instead
+    // of the generic "no confirmed SDR bypass" result.
+    if (start.completed && start.result != ERROR_SUCCESS)
+        return start.result == ERROR_TOO_MANY_SESS ? 25 : 26;
     return started && stopped.completed && stopped.result == ERROR_SUCCESS && retainedDwm && retainedTarget && targetOk &&
         faults == 0 && remainingCallbacks == 0 && borrowedClosed && noPostExpiryVeto && !surfaceRejected &&
         (!managedAborted || (g_managedPipe && g_managedPipe->StopRequested())) &&

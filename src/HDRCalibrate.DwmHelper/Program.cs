@@ -23,6 +23,8 @@ namespace HDRCalibrate.DwmHelper
         private static readonly XmlSerializer RequestSerializer = new XmlSerializer(typeof(DwmPatchRequest));
         private static readonly XmlSerializer ResponseSerializer = new XmlSerializer(typeof(DwmPatchResponse));
         private static readonly XmlSerializer IdentitySerializer = new XmlSerializer(typeof(TimedTestProcessIdentity));
+        // Set once in Main before any IPC path is touched; see DwmIpcRoot.
+        private static string s_requestRoot;
 
         private static int Main(string[] args)
         {
@@ -34,6 +36,13 @@ namespace HDRCalibrate.DwmHelper
                 if (!arguments.TryGetValue("request", out var requestArgument)
                     || !arguments.TryGetValue("response", out var responseArgument))
                     throw new ArgumentException("Erwartet werden --request und --response.");
+                if (arguments.Keys.Any(key => !new[] { "request", "response", DwmIpcRoot.ArgumentName }
+                        .Contains(key, StringComparer.OrdinalIgnoreCase)))
+                    throw new ArgumentException("Unbekanntes Befehlszeilenargument.");
+                // The invoking user's directory, also under over-the-shoulder elevation.
+                s_requestRoot = arguments.TryGetValue(DwmIpcRoot.ArgumentName, out var rootArgument)
+                    ? DwmIpcRoot.Validate(rootArgument)
+                    : DwmIpcRoot.GetDefault();
 
                 var requestPath = ValidateIpcPath(requestArgument);
                 responsePath = ValidateIpcPath(responseArgument);
@@ -928,7 +937,8 @@ namespace HDRCalibrate.DwmHelper
             var process = Process.Start(new ProcessStartInfo
             {
                 FileName = helperPath,
-                Arguments = "--request " + QuoteArgument(requestPath) + " --response " + QuoteArgument(responsePath),
+                Arguments = "--request " + QuoteArgument(requestPath) + " --response " + QuoteArgument(responsePath)
+                    + " --" + DwmIpcRoot.ArgumentName + " " + QuoteArgument(GetRequestRoot()),
                 WorkingDirectory = Path.GetDirectoryName(helperPath),
                 UseShellExecute = false,
                 CreateNoWindow = true,
@@ -1047,11 +1057,7 @@ namespace HDRCalibrate.DwmHelper
 
         private static string GetRequestRoot()
         {
-            return Path.GetFullPath(Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "HDRCalibrate",
-                    "Requests"))
-                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return s_requestRoot ?? throw new InvalidOperationException("Der IPC-Ordner ist nicht festgelegt.");
         }
 
         private static DwmPatchRequest ReadRequest(string path)

@@ -1,9 +1,29 @@
-# HDR Calibrate 1.7.3
+# HDR Calibrate 1.7.4
 
 Portables WPF-Tool für Windows 11 und .NET Framework 4.8.1. Es passt bei
 aktiviertem Windows-HDR ausschließlich die von DWM zusammengesetzten
 SDR-Flächen an. Anwendungen werden nicht gehookt und Windows-Dateien werden
 nicht verändert.
+
+**Neu in 1.7.4:** Die globale SDR-Korrektur unterstützt zusätzlich das
+Windows-Update vom Oktober 2026 (`dwmcore.dll`, von Windows als 10.0.26100.9949
+gemeldet). Alle 458 DWM-Shader dieser Datei sind byte-identisch mit 9278; nach
+dem Update ist trotzdem ein neuer 5-Sekunden-Test nötig.
+
+**Fehlerbehebungen in 1.7.4:** Eine abgelehnte UAC-Abfrage beim
+Anwenden oder beim Windows-Start verwirft weder den erfolgreichen Test noch die
+Startfreigabe; DWM bleibt unverändert. Ein längst widerrufener, ausgeschalteter
+Testnachweis meldet sich nicht mehr bei jeder Anmeldung. Die 10-Sekunden-
+Neustartsperre zählt ab dem Ende eines Helferlaufs, deckt also auch den
+Rücksetz-Neustart des 5-Sekunden-Tests ab. Die Erhöhung mit Administrator-
+Anmeldedaten von einem Standardkonto aus funktioniert. Nicht entfernbare alte
+MHC2-Profilreste blockieren Test, Anwenden und Notfall-Reset nicht mehr,
+sondern werden als Warnung gemeldet. Das Setup entfernt bei Updates Dateien,
+die nicht mehr zum Paket gehören, meldet eine nach dem Kopieren fehlgeschlagene
+Registrierung als solche und behält bei einer unvollständigen Deinstallation
+den Eintrag unter „Apps“ für einen erneuten Versuch. Der native Gamma-Hook
+(nur 26100.8875) erholt sich von einem teilweise fehlgeschlagenen Start und
+gibt gestoppte Sitzungen wieder frei; deshalb liegt er in `Native\1.7.4`.
 
 **Neu in 1.7.3:** Die globale SDR-Korrektur ändert zusätzlich die beiden
 FL10-SDR-Exporte (jetzt sechs Exporte und 24 Konstantenvektoren). Diese
@@ -291,18 +311,26 @@ liest sie sofort zur Kontrolle zurück.
 
 ## Fail-closed-Kompatibilität
 
-Der globale SDR-Shaderpfad ist ausschließlich für die exakt geprüfte Systemdatei
-freigegeben:
+Der globale SDR-Shaderpfad ist ausschließlich für exakt geprüfte Systemdateien
+freigegeben. Version und SHA-256 müssen zur selben Zeile gehören:
 
-- `dwmcore.dll` Version `10.0.26100.9278 (WinBuild.160101.0800)`
-- SHA-256 `40579ECFA394395677FEC84014C32BA5495F334B6D96C5653FD5CAA129DC1222`
+| `dwmcore.dll`-Version (wie von Windows gemeldet) | SHA-256 |
+|---|---|
+| `10.0.26100.9278 (WinBuild.160101.0800)` | `40579ECFA394395677FEC84014C32BA5495F334B6D96C5653FD5CAA129DC1222` |
+| `10.0.26100.9949 (WinBuild.160101.0800)` | `32FAD20F0EFE38789E20130881E5F003AD4D8283926546BA22F4FE72E510E932` |
+
+Bei 9949 trägt die Binärdatei selbst die Version 10.0.26100.9711 (UBR 9711,
+KB5127690); Windows meldet für System32 die Ressourcenversion 9949. Beide
+Builds enthalten dieselben 458 DXBC-Container (nur ihre Offsets sind
+verschoben); Schreibplan und Startfreigabe sind an den jeweiligen Datei-Hash
+gebunden und gelten nie buildübergreifend.
 
 Die sechs SDR-Funktionscontainer sind unverändert. Die drei Bibliotheken
 enthalten jetzt 133/133/101 Funktionen, das SDR-Exportpaar jeweils an Index
 16/17. Neue Elternprüfsummen, diese Indizes und die vollständige D3D-Reflection
 werden weiterhin exakt geprüft; es gibt keine automatische Hash-Übernahme.
 Der separate native Programm-Hook bleibt auf seinem bisherigen privaten
-`26100.8875`-Vertrag und wird auf `26100.9278` nicht gestartet.
+`26100.8875`-Vertrag und wird auf `26100.9278` und `26100.9949` nicht gestartet.
 
 Bei jedem anderen Windows-Build, Hash, Shaderlayout oder Exportmanifest bleibt
 der Schreibpfad gesperrt. Ein Windows-Update kann daher eine neue, separat zu

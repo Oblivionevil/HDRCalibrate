@@ -120,9 +120,17 @@ namespace HDRCalibrate.Setup
                     var details = string.Empty;
                     if (result.RetainedNativeDirectories.Count > 0)
                         details = _text.NativeHookRetained(string.Join("\n", result.RetainedNativeDirectories));
-                    if (result.RemainingDirectory != null)
+                    if (result.RemainingDirectory != null && result.ForeignEntriesRemain)
                         details += (details.Length > 0 ? "\n\n" : string.Empty) + _text.RemainingFiles(result.RemainingDirectory);
-                    ShowResult(true, _text.UninstallDone, details);
+                    if (result.IsComplete)
+                    {
+                        ShowResult(true, _text.UninstallDone, details);
+                    }
+                    else
+                    {
+                        ShowResult(false, _text.UninstallIncomplete(string.Join("\n", result.FailedFiles)), details);
+                        HeadingText.Text = _text.UninstallIncompleteHeading;
+                    }
                 }
             }
             catch (SetupException ex)

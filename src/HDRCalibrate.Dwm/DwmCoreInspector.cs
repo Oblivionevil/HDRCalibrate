@@ -48,10 +48,45 @@ namespace HDRCalibrate.Dwm
         public IReadOnlyList<DxbcBlob> Parents { get; set; }
     }
 
+    /// <summary>One exactly pinned dwmcore.dll: version string as Windows reports it for System32, and whole-file SHA-256.</summary>
+    public sealed class SupportedDwmCoreBuild
+    {
+        public SupportedDwmCoreBuild(string version, string sha256)
+        {
+            Version = version;
+            Sha256 = sha256;
+        }
+
+        public string Version { get; }
+        public string Sha256 { get; }
+
+        public override string ToString() => Version + " / SHA-256 " + Sha256;
+    }
+
     public static class DwmCoreInspector
     {
-        public const string SupportedDwmCoreVersion = "10.0.26100.9278 (WinBuild.160101.0800)";
-        public const string SupportedDwmCoreSha256 = "40579ECFA394395677FEC84014C32BA5495F334B6D96C5653FD5CAA129DC1222";
+        /// <summary>
+        /// Every build here carries the identical SDR shader manifest below; a new
+        /// entry needs that proof (all six exports, parents, indices and the full
+        /// manifest validation) against the exact file before it is added.
+        /// </summary>
+        public static readonly IReadOnlyList<SupportedDwmCoreBuild> SupportedBuilds = new[]
+        {
+            new SupportedDwmCoreBuild("10.0.26100.9278 (WinBuild.160101.0800)",
+                "40579ECFA394395677FEC84014C32BA5495F334B6D96C5653FD5CAA129DC1222"),
+            // Binary 10.0.26100.9711 (KB5127690); Windows reports the resource
+            // version 9949 for System32. All 458 DXBC blobs equal 9278's.
+            new SupportedDwmCoreBuild("10.0.26100.9949 (WinBuild.160101.0800)",
+                "32FAD20F0EFE38789E20130881E5F003AD4D8283926546BA22F4FE72E510E932")
+        };
+
+        /// <summary>Version and hash must belong to the same pinned build.</summary>
+        public static bool IsSupportedBuild(string version, string sha256)
+        {
+            return SupportedBuilds.Any(build =>
+                string.Equals(build.Version, version, StringComparison.Ordinal)
+                && string.Equals(build.Sha256, sha256, StringComparison.OrdinalIgnoreCase));
+        }
 
         private static readonly string[] NativeChunks = { "RDEF", "LFS0", "SHDR", "STAT" };
         private static readonly string[] DownlevelChunks = { "Aon9", "SHDR", "STAT", "RDEF", "LFS0" };
@@ -104,11 +139,10 @@ namespace HDRCalibrate.Dwm
                 result.DwmCoreVersion = FileVersionInfo.GetVersionInfo(fullPath).FileVersion;
                 var image = File.ReadAllBytes(fullPath);
                 result.DwmCoreSha256 = ComputeSha256(image);
-                if (!string.Equals(result.DwmCoreVersion, SupportedDwmCoreVersion, StringComparison.Ordinal)
-                    || !string.Equals(result.DwmCoreSha256, SupportedDwmCoreSha256, StringComparison.OrdinalIgnoreCase))
+                if (!IsSupportedBuild(result.DwmCoreVersion, result.DwmCoreSha256))
                     throw new NotSupportedException(
-                        "Diese dwmcore.dll-Version ist nicht freigegeben. Erwartet: " + SupportedDwmCoreVersion +
-                        " / SHA-256 " + SupportedDwmCoreSha256 + "; gefunden: " + result.DwmCoreVersion +
+                        "Diese dwmcore.dll-Version ist nicht freigegeben. Erwartet: " +
+                        string.Join(" oder ", SupportedBuilds) + "; gefunden: " + result.DwmCoreVersion +
                         " / " + result.DwmCoreSha256 + ".");
 
                 var validation = ValidateShaderManifest(image);

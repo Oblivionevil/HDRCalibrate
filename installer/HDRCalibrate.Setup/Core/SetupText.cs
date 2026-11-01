@@ -55,6 +55,15 @@ namespace HDRCalibrate.Setup.Core
         public string RemainingFiles(string path) => T(
             "Der Ordner enthält weitere, nicht vom Setup stammende Dateien und wurde nicht gelöscht: ",
             "The folder contains other files that were not installed by Setup and was not deleted: ") + path;
+        public string UninstallIncompleteHeading => T("Deinstallation unvollständig", "Uninstallation incomplete");
+        public string UninstallIncomplete(string files) => T(
+            "Folgende Dateien konnten nicht entfernt werden:\n{0}\nDer Eintrag unter „Apps“ bleibt deshalb erhalten. Bitte HDR Calibrate vollständig beenden und die Deinstallation erneut ausführen.",
+            "The following files could not be removed:\n{0}\nThe entry in Apps is therefore kept. Please close HDR Calibrate completely and run the uninstallation again.")
+            .Replace("{0}", files);
+        public string RegistrationFailed(string version, string reason) => T(
+            "Die Dateien von HDR Calibrate {0} wurden installiert, aber Startmenü, Autostart oder der Eintrag unter „Apps“ konnten nicht vollständig eingerichtet werden: ",
+            "The HDR Calibrate {0} files were installed, but the Start menu, startup or Apps entry could not be set up completely: ")
+            .Replace("{0}", version) + reason + T(" Bitte das Setup erneut ausführen.", " Please run Setup again.");
         public string NotInstalled => T("HDR Calibrate ist für diesen Benutzer nicht installiert.", "HDR Calibrate is not installed for this user.");
 
         public string ErrorHeading => T("Vorgang nicht abgeschlossen", "Operation not completed");

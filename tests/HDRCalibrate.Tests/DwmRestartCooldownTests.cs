@@ -192,6 +192,28 @@ namespace HDRCalibrate.Tests
             });
         }
 
+        public static void HelperEndRestartsTheGuard()
+        {
+            WithTemporaryRoot(root =>
+            {
+                var now = AttemptUtc;
+                var cooldown = new DwmRestartCooldown(root, () => now);
+                var requested = cooldown.EnforceAndMark();
+                // A timed test resets DWM about five seconds after its request.
+                now = AttemptUtc.AddSeconds(6);
+                Check(cooldown.GetRemaining() == TimeSpan.FromSeconds(4), "The request marker baseline is wrong.");
+                cooldown.MarkRestart();
+                Check(cooldown.GetRemaining() == DwmRestartCooldown.Duration,
+                    "The guard still counted from the request instead of the last possible DWM restart.");
+                Expect<DwmRestartCooldownException>(() => cooldown.EnforceAndMark());
+                cooldown.RevertUnusedMark(requested);
+                Check(cooldown.GetRemaining() == DwmRestartCooldown.Duration,
+                    "Releasing the old request marker removed the restart mark.");
+                now = now.AddSeconds(10);
+                Check(cooldown.GetRemaining() == TimeSpan.Zero, "The restart mark never expired.");
+            });
+        }
+
         private static void WithTemporaryRoot(Action<string> test)
         {
             // No LocalApplicationData state, helper, registry, DWM or UI is used.

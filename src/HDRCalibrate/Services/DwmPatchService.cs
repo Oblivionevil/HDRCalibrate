@@ -11,6 +11,19 @@ using System.Xml.Serialization;
 
 namespace HDRCalibrate.Services
 {
+    /// <summary>
+    /// The UAC prompt was declined before any helper started. DWM, the restart
+    /// guard and every proof are unchanged, so callers must not treat it as a
+    /// failed DWM operation.
+    /// </summary>
+    public sealed class DwmElevationCancelledException : OperationCanceledException
+    {
+        public DwmElevationCancelledException(Exception inner)
+            : base("Die Administratorabfrage wurde abgebrochen; DWM wurde nicht verändert.", inner)
+        {
+        }
+    }
+
     public sealed class DwmPatchService
     {
         private const int HelperTimeoutMilliseconds = 60000;
@@ -128,10 +141,7 @@ namespace HDRCalibrate.Services
             if (!File.Exists(helperPath))
                 throw new FileNotFoundException("Der erhöhte DWM-Helfer fehlt neben HDRCalibrate.exe.", helperPath);
 
-            var requestRoot = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "HDRCalibrate",
-                "Requests");
+            var requestRoot = DwmIpcRoot.GetDefault();
             Directory.CreateDirectory(requestRoot);
             long? restartMark = null;
             if (command != DwmPatchCommand.SafetyReset && command != DwmPatchCommand.Preflight)
@@ -157,7 +167,10 @@ namespace HDRCalibrate.Services
                 var startInfo = new ProcessStartInfo
                 {
                     FileName = helperPath,
-                    Arguments = "--request " + QuoteArgument(requestPath) + " --response " + QuoteArgument(responsePath),
+                    // The root lets an over-the-shoulder elevated helper (another account)
+                    // use this user's request directory instead of its own profile.
+                    Arguments = "--request " + QuoteArgument(requestPath) + " --response " + QuoteArgument(responsePath)
+                        + " --" + DwmIpcRoot.ArgumentName + " " + QuoteArgument(requestRoot),
                     WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory,
                     UseShellExecute = true,
                     Verb = "runas",
@@ -172,7 +185,7 @@ namespace HDRCalibrate.Services
                 catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
                 {
                     TryRevertUnusedRestartMark(restartMark);
-                    throw new OperationCanceledException("Die Administratorabfrage wurde abgebrochen.", ex);
+                    throw new DwmElevationCancelledException(ex);
                 }
 
                 if (helper == null)
@@ -234,6 +247,7 @@ namespace HDRCalibrate.Services
             }
             finally
             {
+                if (helperStarted) TryMarkObservedRestart();
                 // On timeout the elevated helper may still need both files. Leave them in place.
                 if (!helperStarted || helperCompleted)
                 {
@@ -254,10 +268,7 @@ namespace HDRCalibrate.Services
             if (!File.Exists(helperPath))
                 throw new FileNotFoundException("Der erhöhte DWM-Helfer fehlt neben HDRCalibrate.exe.", helperPath);
 
-            var requestRoot = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "HDRCalibrate",
-                "Requests");
+            var requestRoot = DwmIpcRoot.GetDefault();
             Directory.CreateDirectory(requestRoot);
             var restartMark = _restartCooldown.EnforceAndMark();
 
@@ -294,7 +305,10 @@ namespace HDRCalibrate.Services
                 var startInfo = new ProcessStartInfo
                 {
                     FileName = helperPath,
-                    Arguments = "--request " + QuoteArgument(requestPath) + " --response " + QuoteArgument(responsePath),
+                    // The root lets an over-the-shoulder elevated helper (another account)
+                    // use this user's request directory instead of its own profile.
+                    Arguments = "--request " + QuoteArgument(requestPath) + " --response " + QuoteArgument(responsePath)
+                        + " --" + DwmIpcRoot.ArgumentName + " " + QuoteArgument(requestRoot),
                     WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory,
                     UseShellExecute = true,
                     Verb = "runas",
@@ -309,7 +323,7 @@ namespace HDRCalibrate.Services
                 catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
                 {
                     TryRevertUnusedRestartMark(restartMark);
-                    throw new OperationCanceledException("Die Administratorabfrage wurde abgebrochen.", ex);
+                    throw new DwmElevationCancelledException(ex);
                 }
 
                 if (helper == null)
@@ -385,6 +399,7 @@ namespace HDRCalibrate.Services
             }
             finally
             {
+                if (helperStarted) TryMarkObservedRestart();
                 // The supervisor can exit after handing recovery to an independent
                 // watchdog. Its exit alone does not make the shared IPC files disposable.
                 if (!helperStarted || outcomeFinalized)
@@ -453,6 +468,18 @@ namespace HDRCalibrate.Services
         private static string QuoteArgument(string value)
         {
             return "\"" + value.Replace("\"", "\\\"") + "\"";
+        }
+
+        private void TryMarkObservedRestart()
+        {
+            // A started helper can restart DWM more than once (a timed test patches
+            // and then resets). Count the guard from its end. If this write fails,
+            // the earlier request marker still guards (fail closed).
+            try { _restartCooldown.MarkRestart(); }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is InvalidDataException)
+            {
+                Trace.TraceWarning("DWM-Neustartsperre nach Helferende nicht aktualisiert: " + ex.Message);
+            }
         }
 
         private void TryRevertUnusedRestartMark(long? restartMark)

@@ -43,7 +43,7 @@ namespace HDRCalibrate.Dwm
                 var modifiedImage = DwmShaderRewriter.Rewrite(diskImage, settings, out var rewriteReport);
                 var patchPlanFingerprint = rewriteReport.ModifiedRanges.Count == 0
                     ? string.Empty
-                    : DwmPatchPlanFingerprint.Compute(modifiedImage, rewriteReport.ModifiedRanges);
+                    : DwmPatchPlanFingerprint.Compute(compatibility.DwmCoreSha256, modifiedImage, rewriteReport.ModifiedRanges);
                 diagnostics.Add(
                     rewriteReport.PatchedShaderCount + " Zielshader in " + rewriteReport.ParentLibraryCount +
                     " Bibliotheken; exakt " + rewriteReport.ChangedByteCount + " geänderte Bytes auf " +
@@ -123,7 +123,7 @@ namespace HDRCalibrate.Dwm
             var diskImage = File.ReadAllBytes(compatibility.DwmCorePath);
             var preflightImage = DwmShaderRewriter.Rewrite(diskImage, settings, out var preflightReport);
             var patchPlanFingerprint = DwmPatchPlanFingerprint.Compute(
-                preflightImage, preflightReport.ModifiedRanges);
+                compatibility.DwmCoreSha256, preflightImage, preflightReport.ModifiedRanges);
             diagnostics.Add(
                 "Preflight: " + preflightReport.PatchedShaderCount + " SDR-Shader, " +
                 preflightReport.PatchedConstantVectorCount + " Konstantenvektoren, " +
@@ -141,6 +141,7 @@ namespace HDRCalibrate.Dwm
                     WindowsEnvironmentGuard.RequireCurrent(expectedWindowsEnvironment);
                 var runtimeReport = PatchRunningDwm(
                     module,
+                    compatibility.DwmCoreSha256,
                     settings,
                     preflightReport,
                     patchPlanFingerprint,
@@ -221,6 +222,7 @@ namespace HDRCalibrate.Dwm
 
         private static DwmRewriteReport PatchRunningDwm(
             DwmProcessModule module,
+            string dwmCoreSha256,
             CalibrationSettings settings,
             DwmRewriteReport preflightReport,
             string expectedPatchPlanFingerprint,
@@ -251,8 +253,10 @@ namespace HDRCalibrate.Dwm
 
                 var original = ReadModule(process, module, diagnostics);
                 var modified = DwmShaderRewriter.Rewrite(original, settings, out var report);
+                // Same verified file hash as the preflight plan; the mapped image
+                // itself is compared byte-for-byte through the fingerprint.
                 var runtimePatchPlanFingerprint = DwmPatchPlanFingerprint.Compute(
-                    modified, report.ModifiedRanges);
+                    dwmCoreSha256, modified, report.ModifiedRanges);
                 if (preflightReport == null
                     || report.PatchedShaderCount != preflightReport.PatchedShaderCount
                     || report.PatchedConstantVectorCount != preflightReport.PatchedConstantVectorCount

@@ -34,17 +34,7 @@ namespace HDRCalibrate.Setup.Core
             EnsureDirectory(Path.GetDirectoryName(target));
             if (SetupPaths.IsReparsePoint(target))
                 throw new IOException("Das Ziel ist ein Reparse-Punkt: " + target);
-            if (File.Exists(target))
-            {
-                if (!Directory.Exists(_backupDirectory))
-                {
-                    Directory.CreateDirectory(_backupDirectory);
-                    File.SetAttributes(_backupDirectory, FileAttributes.Directory | FileAttributes.Hidden);
-                }
-                var backup = Path.Combine(_backupDirectory, _replaced.Count.ToString("D4") + "-" + Path.GetFileName(target));
-                File.Move(target, backup);
-                _replaced.Add(Tuple.Create(target, backup));
-            }
+            if (File.Exists(target)) MoveToBackup(target);
             try
             {
                 File.Copy(sourceFile, target, false);
@@ -57,6 +47,42 @@ namespace HDRCalibrate.Setup.Core
             }
             _placed.Add(target);
             _log.Write("Datei installiert: " + relativePath);
+        }
+
+        /// <summary>
+        /// Moves a file that is no longer part of the package into the backup, so a
+        /// rollback restores it and Commit deletes it.
+        /// </summary>
+        /// <returns>False when the file stays in place (locked or a reparse point).</returns>
+        public bool TryRemove(string relativePath)
+        {
+            if (_completed) throw new InvalidOperationException("Die Dateitransaktion ist bereits abgeschlossen.");
+            var target = SetupPaths.Combine(_root, relativePath);
+            if (!File.Exists(target)) return true;
+            if (SetupPaths.IsReparsePoint(target)) return false;
+            try
+            {
+                MoveToBackup(target);
+                _log.Write("Veraltete Datei entfernt: " + relativePath);
+                return true;
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                _log.Write("Veraltete Datei bleibt erhalten: " + relativePath + " (" + ex.Message + ")");
+                return false;
+            }
+        }
+
+        private void MoveToBackup(string target)
+        {
+            if (!Directory.Exists(_backupDirectory))
+            {
+                Directory.CreateDirectory(_backupDirectory);
+                File.SetAttributes(_backupDirectory, FileAttributes.Directory | FileAttributes.Hidden);
+            }
+            var backup = Path.Combine(_backupDirectory, _replaced.Count.ToString("D4") + "-" + Path.GetFileName(target));
+            File.Move(target, backup);
+            _replaced.Add(Tuple.Create(target, backup));
         }
 
         public void Commit()

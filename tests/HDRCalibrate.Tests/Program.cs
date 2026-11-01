@@ -30,6 +30,7 @@ namespace HDRCalibrate.Tests
                 Run("Active display detection", TestDisplayDetection);
                 Run("Current display profile generation", TestCurrentDisplayProfileGeneration);
                 Run("SDR-only adjustment math", TestSdrAdjustmentMath);
+                Run("Pinned dwmcore builds bind version, hash and plan", TestPinnedDwmCoreBuilds);
                 Run("Installed dwmcore six-export manifest", TestDwmCoreCompatibility);
                 Run("DWM whole-file identity rejects an altered supported image", TestDwmCoreAlteredFileRejected);
                 Run("DWM ABI-preserving constant patch dry-run", TestDwmShaderRewrite);
@@ -54,6 +55,11 @@ namespace HDRCalibrate.Tests
                 Run("DWM cooldown retains the test until Apply becomes available", TestApplyCooldownCountdown);
                 Run("A pre-helper cooldown rejection cannot revoke the test", TestApplyCooldownFailureKeepsProof);
                 Run("Unreadable cooldown cannot enable Apply", TestApplyCooldownReadFailure);
+                Run("A declined UAC prompt keeps the successful test", TestApplyElevationCancelKeepsProof);
+                Run("A long-revoked startup approval stays silent at logon", TestRevokedStartupStaysSilentAtLogon);
+                Run("The restart guard counts from the end of a started helper", DwmRestartCooldownTests.HelperEndRestartsTheGuard);
+                Run("The elevated helper accepts only the app request directory", ReviewRegressionTests.IpcRootAcceptsOnlyTheAppRequestDirectory);
+                Run("Legacy MHC2 cleanup failures never block DWM operations", ReviewRegressionTests.LegacyProfileCleanupNeverBlocks);
                 Run("Startup activation approval is exact and fail-closed", TestStartupActivationPolicy);
                 Run("Startup activation policy persistence is atomic", TestStartupActivationPolicyPersistence);
                 Run("Startup activation disable failures remain visible", TestStartupActivationDisableFailure);
@@ -118,6 +124,9 @@ namespace HDRCalibrate.Tests
                 Run("Native mismatch or stop failure leaves the installation unchanged", SetupTests.RejectedUpdatesChangeNothing);
                 Run("A failed file replacement restores every previous file", SetupTests.FailedCopyRestoresPreviousFiles);
                 Run("Uninstall removes only owned files, values and shortcuts", SetupTests.UninstallRemovesOnlyOwnedState);
+                Run("Uninstall keeps its entry while owned files remain", SetupTests.UninstallKeepsEntryWhileOwnedFilesRemain);
+                Run("Setup update removes files the package no longer contains", SetupTests.UpgradeRemovesObsoleteOwnedFiles);
+                Run("A registration failure after copying is reported honestly", SetupTests.RegistrationFailureIsReportedHonestly);
                 Run("Setup arguments, stop codes and folders are exact", SetupTests.ArgumentsAndStopCodesAreExact);
                 Run("Setup window loads the shared theme in its own domain", SetupUiTests.WindowLoadsSharedThemeInBothModes);
 
@@ -482,6 +491,62 @@ namespace HDRCalibrate.Tests
             AssertClose(Math.Pow(0.4, 2.2) * 1.1, adjusted[2], 1e-12, "Safe blue preview");
         }
 
+        // Synthetic fixtures need one consistent version/hash pair. Some tests mix
+        // them with a real read-only preflight, so prefer the installed pinned build.
+        private static readonly Lazy<SupportedDwmCoreBuild> InstalledOrFirstPinnedBuild = new Lazy<SupportedDwmCoreBuild>(() =>
+        {
+            var installed = DwmCoreInspector.InspectSystem();
+            return DwmCoreInspector.SupportedBuilds.FirstOrDefault(build =>
+                    string.Equals(build.Version, installed.DwmCoreVersion, StringComparison.Ordinal)
+                    && string.Equals(build.Sha256, installed.DwmCoreSha256, StringComparison.OrdinalIgnoreCase))
+                ?? DwmCoreInspector.SupportedBuilds[0];
+        });
+
+        private static SupportedDwmCoreBuild TestDwmCoreBuild => InstalledOrFirstPinnedBuild.Value;
+
+        private static void TestPinnedDwmCoreBuilds()
+        {
+            Assert(DwmCoreInspector.SupportedBuilds.Count == 2
+                && DwmCoreInspector.IsSupportedBuild("10.0.26100.9278 (WinBuild.160101.0800)",
+                    "40579ECFA394395677FEC84014C32BA5495F334B6D96C5653FD5CAA129DC1222")
+                && DwmCoreInspector.IsSupportedBuild("10.0.26100.9949 (WinBuild.160101.0800)",
+                    "32fad20f0efe38789e20130881e5f003ad4d8283926546ba22f4fe72e510e932"),
+                "The reviewed 9278 and 9949 builds are not both pinned.");
+            // A version may only pass together with its own file hash.
+            Assert(!DwmCoreInspector.IsSupportedBuild("10.0.26100.9278 (WinBuild.160101.0800)",
+                    "32FAD20F0EFE38789E20130881E5F003AD4D8283926546BA22F4FE72E510E932")
+                && !DwmCoreInspector.IsSupportedBuild("10.0.26100.9949 (WinBuild.160101.0800)",
+                    "40579ECFA394395677FEC84014C32BA5495F334B6D96C5653FD5CAA129DC1222")
+                && !DwmCoreInspector.IsSupportedBuild("10.0.26100.9711 (WinBuild.160101.0800)",
+                    "32FAD20F0EFE38789E20130881E5F003AD4D8283926546BA22F4FE72E510E932")
+                && !DwmCoreInspector.IsSupportedBuild(null, null),
+                "A version was accepted with another build's hash.");
+
+            // The plan fingerprint binds to the build: identical writes on another
+            // pinned build never reuse an approval.
+            var image = new byte[64];
+            image[10] = 1;
+            var ranges = new[] { new DwmWriteRange { Offset = 10, Length = 1 } };
+            var first = ComputePatchPlanFingerprint(DwmCoreInspector.SupportedBuilds[0].Sha256, image, ranges);
+            Assert(first == ComputePatchPlanFingerprint(DwmCoreInspector.SupportedBuilds[0].Sha256.ToLowerInvariant(), image, ranges),
+                "The plan fingerprint depends on hash letter case.");
+            Assert(first != ComputePatchPlanFingerprint(DwmCoreInspector.SupportedBuilds[1].Sha256, image, ranges),
+                "Identical writes on two pinned builds share one plan fingerprint.");
+
+            var policy = StartupActivationPolicy.CreateFromSuccessfulTest(
+                CreateTestStartupSettings(),
+                CreateSuccessfulTimedTestResponse(CreateTestStartupPreflight()),
+                "1.0.0.0", "1.0.0.0", false, CreateTestWindowsEnvironment(),
+                new MutableWindowsEnvironmentIdentityProvider(CreateTestWindowsEnvironment()));
+            Assert(StartupActivationPolicy.IsValidForCurrentBuild(policy, "1.0.0.0", "1.0.0.0",
+                new MutableWindowsEnvironmentIdentityProvider(CreateTestWindowsEnvironment())),
+                "A test on a pinned build did not produce a valid startup approval.");
+            policy.DwmCoreVersion = DwmCoreInspector.SupportedBuilds.First(build => build != TestDwmCoreBuild).Version;
+            Assert(!StartupActivationPolicy.IsValidForCurrentBuild(policy, "1.0.0.0", "1.0.0.0",
+                new MutableWindowsEnvironmentIdentityProvider(CreateTestWindowsEnvironment())),
+                "A startup approval with mismatched version and hash stayed valid.");
+        }
+
         private static void TestDwmCoreCompatibility()
         {
             var info = DwmCoreInspector.InspectSystem();
@@ -489,8 +554,8 @@ namespace HDRCalibrate.Tests
             Assert(info.TargetShaderCount == 6, "Expected all six SDR target shaders, including FL10.");
             Assert(info.ValidatedSdrShaderCount == 6, "Expected exactly six profiled SDR exports.");
             Assert(info.ValidatedParentLibraryCount == 3, "Expected exactly three SDR profile libraries.");
-            Assert(string.Equals(info.DwmCoreSha256, DwmCoreInspector.SupportedDwmCoreSha256,
-                StringComparison.OrdinalIgnoreCase), "dwmcore.dll SHA-256 is not pinned.");
+            Assert(DwmCoreInspector.IsSupportedBuild(info.DwmCoreVersion, info.DwmCoreSha256),
+                "dwmcore.dll version and SHA-256 are not one pinned build.");
             Assert(!string.IsNullOrWhiteSpace(info.DwmCoreVersion), "dwmcore.dll has no version.");
             Console.WriteLine("DWMCORE: " + info.DwmCoreVersion + "; " + info.Reason);
         }
@@ -509,8 +574,8 @@ namespace HDRCalibrate.Tests
                 Assert(!result.IsCompatible, "A changed system-image hash was accepted.");
                 Assert(result.TargetShaderCount == 0 && result.ValidatedSdrShaderCount == 0,
                     "An unpinned image reached shader approval.");
-                Assert(!string.Equals(result.DwmCoreSha256, DwmCoreInspector.SupportedDwmCoreSha256,
-                    StringComparison.OrdinalIgnoreCase), "Mutation did not change the whole-file fingerprint.");
+                Assert(DwmCoreInspector.SupportedBuilds.All(build => !string.Equals(result.DwmCoreSha256, build.Sha256,
+                    StringComparison.OrdinalIgnoreCase)), "Mutation did not change the whole-file fingerprint.");
             }
             finally
             {
@@ -772,8 +837,9 @@ namespace HDRCalibrate.Tests
                     "A mapped DWM write range does not use the file-image offset and length.");
             }
 
-            var diskFingerprint = ComputePatchPlanFingerprint(modifiedDiskImage, diskReport.ModifiedRanges);
-            var mappedFingerprint = ComputePatchPlanFingerprint(modifiedMappedImage, mappedReport.ModifiedRanges);
+            var systemSha256 = DwmCoreInspector.InspectSystem().DwmCoreSha256;
+            var diskFingerprint = ComputePatchPlanFingerprint(systemSha256, modifiedDiskImage, diskReport.ModifiedRanges);
+            var mappedFingerprint = ComputePatchPlanFingerprint(systemSha256, modifiedMappedImage, mappedReport.ModifiedRanges);
             Assert(diskFingerprint == mappedFingerprint,
                 "The mapped DWM image patch fingerprint differs from the preflight file-image fingerprint.");
             var preflight = new DwmPatchEngine().Preflight(settings);
@@ -823,7 +889,7 @@ namespace HDRCalibrate.Tests
                 PatchedShaderCount = 4,
                 PatchedConstantVectorCount = 16,
                 ModifiedPageCount = 6,
-                DwmCoreVersion = DwmCoreInspector.SupportedDwmCoreVersion,
+                DwmCoreVersion = TestDwmCoreBuild.Version,
                 PatchPlanFingerprint = new string('A', 64)
             };
             var reset = new DwmPatchResponse
@@ -1911,6 +1977,56 @@ namespace HDRCalibrate.Tests
                 "Read-only guard recovery lost the test or left Apply blocked.");
         }
 
+        private static void TestApplyElevationCancelKeepsProof()
+        {
+            var environment = CreateTestWindowsEnvironment();
+            var store = new MemoryStartupActivationPolicyStore();
+            var viewModel = CreateCooldownViewModel(store, environment, () => TimeSpan.Zero);
+            var handleFailure = typeof(MainViewModel).GetMethod("HandleApplyFailure",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            handleFailure.Invoke(viewModel, new object[]
+            {
+                new DwmElevationCancelledException(new System.ComponentModel.Win32Exception(1223))
+            });
+            Assert(viewModel.IsCurrentSettingsTested && viewModel.CanApply && !store.Load().ApprovalRevoked && !viewModel.IsError,
+                "A declined UAC prompt revoked the successful test.");
+            Assert(viewModel.StatusMessage.Contains("Der erfolgreiche Test bleibt gültig"),
+                "The declined UAC prompt did not say that the test stays valid.");
+            Assert(((WindowsEnvironmentIdentity)GetPrivateField(viewModel, "_lastTestedWindowsEnvironment")).Matches(environment),
+                "A declined UAC prompt lost the tested Windows identity.");
+        }
+
+        private static void TestRevokedStartupStaysSilentAtLogon()
+        {
+            var environment = CreateTestWindowsEnvironment();
+            // Disabled and revoked by an earlier Windows update: every autostart
+            // passes --startup, but there is nothing the user expects to happen.
+            var store = new MemoryStartupActivationPolicyStore();
+            var policy = CreateTestStartupPolicy(environment, false);
+            policy.ApprovalRevoked = true;
+            store.Save(policy);
+            var silent = CreateIsolatedViewModel(store, new MutableWindowsEnvironmentIdentityProvider(environment),
+                CreateEnabledRunValueStore());
+            SetPrivateField(silent, "_initializationTask", System.Threading.Tasks.Task.CompletedTask);
+            var result = silent.TryActivateAtWindowsStartupAsync(true).GetAwaiter().GetResult();
+            Assert(result.Decision == StartupActivationDecision.Disabled && result.Success && !result.Attempted
+                && string.IsNullOrEmpty(result.Message) && !silent.IsError,
+                "A long-revoked, disabled startup approval warned at logon.");
+
+            // Enabled until this logon's Windows update: reported exactly here.
+            var updatedStore = new MemoryStartupActivationPolicyStore();
+            updatedStore.Save(CreateTestStartupPolicy(environment, true));
+            var updated = environment.Clone();
+            updated.UpdateBuildRevision++;
+            var revokedNow = CreateIsolatedViewModel(updatedStore, new MutableWindowsEnvironmentIdentityProvider(updated),
+                CreateEnabledRunValueStore());
+            SetPrivateField(revokedNow, "_initializationTask", System.Threading.Tasks.Task.CompletedTask);
+            var reported = revokedNow.TryActivateAtWindowsStartupAsync(true).GetAwaiter().GetResult();
+            Assert(reported.Decision == StartupActivationDecision.ApprovalInvalid && !reported.Success && !reported.Attempted
+                && !string.IsNullOrEmpty(reported.Message),
+                "Revoking an enabled startup approval was not reported at logon.");
+        }
+
         private static MemoryRunValueStore CreateEnabledRunValueStore()
         {
             var runStore = new MemoryRunValueStore();
@@ -1926,7 +2042,7 @@ namespace HDRCalibrate.Tests
                 UpdateBuildRevision = 100,
                 BuildLabEx = "26100.1.amd64fre.ge_release.240331-1435",
                 DwmExecutableSha256 = new string('A', 64),
-                DwmCoreSha256 = DwmCoreInspector.SupportedDwmCoreSha256
+                DwmCoreSha256 = TestDwmCoreBuild.Sha256
             };
         }
 
@@ -1974,7 +2090,7 @@ namespace HDRCalibrate.Tests
             {
                 Success = true,
                 TimedTestAvailable = true,
-                DwmCoreVersion = DwmCoreInspector.SupportedDwmCoreVersion,
+                DwmCoreVersion = TestDwmCoreBuild.Version,
                 PatchPlanFingerprint = new string('B', 64)
             };
         }
@@ -2122,7 +2238,7 @@ namespace HDRCalibrate.Tests
                 CorrelationToken = token,
                 DwmProcessId = 4242,
                 DwmStartTimeUtcTicks = new DateTime(2026, 9, 4, 8, 0, 0, DateTimeKind.Utc).Ticks,
-                DwmCoreVersion = DwmCoreInspector.SupportedDwmCoreVersion,
+                DwmCoreVersion = TestDwmCoreBuild.Version,
                 PatchActivatedUtcTicks = new DateTime(2026, 9, 4, 8, 0, 1, DateTimeKind.Utc).Ticks,
                 PatchPlanFingerprint = new string('A', 64)
             };
@@ -2243,6 +2359,7 @@ namespace HDRCalibrate.Tests
         }
 
         private static string ComputePatchPlanFingerprint(
+            string dwmCoreSha256,
             byte[] modifiedImage,
             IEnumerable<DwmWriteRange> ranges)
         {
@@ -2256,7 +2373,7 @@ namespace HDRCalibrate.Tests
                 | System.Reflection.BindingFlags.NonPublic);
             if (method == null)
                 throw new InvalidOperationException("The DWM patch-plan fingerprint method is unavailable.");
-            return (string)method.Invoke(null, new object[] { modifiedImage, ranges });
+            return (string)method.Invoke(null, new object[] { dwmCoreSha256, modifiedImage, ranges });
         }
 
         private static void SetInternalProperty(object instance, string propertyName, object value)

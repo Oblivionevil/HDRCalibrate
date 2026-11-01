@@ -156,7 +156,7 @@ if ($SimulateWindowsUpdate) {
     $capturePolicy.Settings.ApplySdrGammaCorrection = $true
     $capturePolicy.WindowsEnvironment = $pastEnvironment
     $capturePolicy.SettingsFingerprint = [HDRCalibrate.Services.CalibrationSettingsIdentity]::Compute($capturePolicy.Settings)
-    $capturePolicy.DwmCoreVersion = [HDRCalibrate.Dwm.DwmCoreInspector]::SupportedDwmCoreVersion
+    $capturePolicy.DwmCoreVersion = [HDRCalibrate.Dwm.DwmCoreInspector]::InspectSystem().DwmCoreVersion
     $capturePolicy.DwmCoreSha256 = $pastEnvironment.DwmCoreSha256
     $capturePolicy.PatchPlanFingerprint = 'A' * 64
     $capturePolicy.PatchImplementationId = [HDRCalibrate.Dwm.DwmPatchSafety]::PatchImplementationId

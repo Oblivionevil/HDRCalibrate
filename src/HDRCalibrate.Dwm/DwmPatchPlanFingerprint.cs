@@ -9,8 +9,10 @@ namespace HDRCalibrate.Dwm
 {
     internal static class DwmPatchPlanFingerprint
     {
-        public static string Compute(byte[] modifiedImage, IEnumerable<DwmWriteRange> ranges)
+        /// <param name="dwmCoreSha256">The verified whole-file hash of the patched build; binds the plan to it.</param>
+        public static string Compute(string dwmCoreSha256, byte[] modifiedImage, IEnumerable<DwmWriteRange> ranges)
         {
+            if (string.IsNullOrWhiteSpace(dwmCoreSha256)) throw new ArgumentNullException(nameof(dwmCoreSha256));
             if (modifiedImage == null) throw new ArgumentNullException(nameof(modifiedImage));
             if (ranges == null) throw new ArgumentNullException(nameof(ranges));
 
@@ -21,7 +23,7 @@ namespace HDRCalibrate.Dwm
             using (var writer = new BinaryWriter(payload, Encoding.UTF8, true))
             {
                 writer.Write(DwmPatchSafety.PatchImplementationId);
-                writer.Write(DwmCoreInspector.SupportedDwmCoreSha256);
+                writer.Write(dwmCoreSha256.ToUpperInvariant());
                 writer.Write(ordered.Count);
                 foreach (var range in ordered)
                 {

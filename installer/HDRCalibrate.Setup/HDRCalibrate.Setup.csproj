@@ -11,9 +11,9 @@
     <LangVersion>7.3</LangVersion>
     <Deterministic>true</Deterministic>
     <DefaultItemExcludes>$(DefaultItemExcludes);artifacts\**</DefaultItemExcludes>
-    <Version>1.7.3</Version>
-    <AssemblyVersion>1.7.3.0</AssemblyVersion>
-    <FileVersion>1.7.3.0</FileVersion>
+    <Version>1.7.4</Version>
+    <AssemblyVersion>1.7.4.0</AssemblyVersion>
+    <FileVersion>1.7.4.0</FileVersion>
     <Product>HDR Calibrate</Product>
     <AssemblyTitle>HDR Calibrate Setup</AssemblyTitle>
     <Description>HDR Calibrate Setup</Description>

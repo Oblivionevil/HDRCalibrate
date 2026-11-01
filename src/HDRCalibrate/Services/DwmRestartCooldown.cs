@@ -71,6 +71,24 @@ namespace HDRCalibrate.Services
         }
 
         /// <summary>
+        /// Records a DWM restart that a started helper may have performed after
+        /// the initial mark, e.g. the watchdog reset at the end of a timed test.
+        /// The guard then counts from the last possible restart, not from the
+        /// request. Never enforces; the request was already admitted.
+        /// </summary>
+        public long MarkRestart()
+        {
+            lock (Gate)
+            {
+                var now = ReadUtcNow();
+                Directory.CreateDirectory(_stateRoot);
+                File.WriteAllText(_markerPath, now.Ticks.ToString(CultureInfo.InvariantCulture));
+                _futureMarkerTicks = null;
+                return now.Ticks;
+            }
+        }
+
+        /// <summary>
         /// Releases a marker whose helper was never started (e.g. a declined UAC
         /// prompt), so no DWM restart happened. A marker was only written after the
         /// previous guard had expired, so removing it restores an equivalent state.

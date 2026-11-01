@@ -102,10 +102,13 @@ namespace HDRCalibrate.Setup.Core
                     if (!InstallationLocator.SamePath(setupExecutable, installedSetup))
                         transaction.Put(setupExecutable, ProductInfo.SetupExeName);
 
-                    var files = new List<string>(previous?.Files ?? Enumerable.Empty<string>());
-                    files.AddRange(package.Manifest.Entries.Where(entry => !entry.IsNative).Select(entry => entry.RelativePath));
-                    files.Add(ProductInfo.SetupExeName);
-                    files.Add(ProductInfo.RecordFileName);
+                    var files = new HashSet<string>(
+                        package.Manifest.Entries.Where(entry => !entry.IsNative).Select(entry => entry.RelativePath),
+                        StringComparer.OrdinalIgnoreCase) { ProductInfo.SetupExeName, ProductInfo.RecordFileName };
+                    // Files an earlier version installed but this package no longer
+                    // contains. A file that cannot be moved stays owned by the record.
+                    foreach (var obsolete in (previous?.Files ?? Enumerable.Empty<string>()).Where(file => !files.Contains(file)).ToList())
+                        if (!transaction.TryRemove(obsolete)) files.Add(obsolete);
                     var ownsDirectory = createdDirectory || previous?.CreatedDirectory == true
                         || (previous == null && InstallationLocator.SamePath(directory, _context.Locations.DefaultInstallDirectory));
                     var recordFile = Path.Combine(staging, ProductInfo.RecordFileName);
@@ -123,8 +126,17 @@ namespace HDRCalibrate.Setup.Core
                 }
 
                 progress?.Report(text.ProgressRegistering);
-                Register(package, directory, options);
-                RemoveLegacyInstallerState(directory);
+                try
+                {
+                    Register(package, directory, options);
+                    RemoveLegacyInstallerState(directory);
+                }
+                catch (Exception ex) when (!(ex is SetupException))
+                {
+                    // The files are committed; say so instead of reporting a failed install.
+                    log.Write("Registrierung nach dem Kopieren fehlgeschlagen: " + ex);
+                    throw new SetupException(text.RegistrationFailed(package.Manifest.Version, ex.Message), false, ex);
+                }
                 log.Write("Installation abgeschlossen.");
                 return new InstallResult(directory);
             }

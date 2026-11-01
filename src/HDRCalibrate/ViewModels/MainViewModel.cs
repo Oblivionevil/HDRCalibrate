@@ -36,6 +36,9 @@ namespace HDRCalibrate.ViewModels
         private string _startupStateError;
         private string _startupPolicyError;
         private bool _startupApprovalInvalidated;
+        // True only when this session revoked an enabled (or unverifiable)
+        // approval. A long-revoked, disabled policy stays silent at logon.
+        private bool _enabledStartupApprovalRevoked;
         private bool _refreshingStartupActivationState;
         private Task _initializationTask;
         private string _statusMessage = "Bereit";
@@ -548,6 +551,8 @@ namespace HDRCalibrate.ViewModels
             catch (Exception ex)
             {
                 _startupActivationPolicy = null;
+                // An unreadable policy may have been enabled; report it once.
+                _enabledStartupApprovalRevoked = true;
                 RevokeStartupApproval("Der gespeicherte Testnachweis ist nicht lesbar. Erneute Freigabe erforderlich: " + ex.Message);
                 StartupActivationStatus = "Gesperrt: " + _startupPolicyError;
             }
@@ -640,6 +645,10 @@ namespace HDRCalibrate.ViewModels
                 RefreshStartupActivationState();
                 if (isStartupLaunch && _startupApprovalInvalidated)
                 {
+                    // Every autostart passes --startup. Without an approval that was
+                    // enabled until now there is nothing the user expects to happen.
+                    if (!_enabledStartupApprovalRevoked)
+                        return new StartupActivationResult(StartupActivationDecision.Disabled, false, true, string.Empty);
                     SetError(_startupPolicyError ?? WindowsApprovalRevokedMessage);
                     return new StartupActivationResult(StartupActivationDecision.ApprovalInvalid, false, false, StatusMessage);
                 }
@@ -743,6 +752,15 @@ namespace HDRCalibrate.ViewModels
                         true,
                         true,
                         StatusMessage);
+                }
+                catch (DwmElevationCancelledException)
+                {
+                    // No helper started: DWM, the guard and the approval are unchanged.
+                    // The approval stays enabled; the user can switch it off.
+                    IsError = false;
+                    StatusMessage = "Startaktivierung übersprungen: Die Administratorabfrage wurde abgelehnt; DWM wurde nicht verändert. " +
+                        "Beim nächsten Windows-Start wird erneut gefragt, solange die Startaktivierung eingeschaltet ist.";
+                    return new StartupActivationResult(StartupActivationDecision.Ready, false, false, StatusMessage);
                 }
                 catch (Exception ex)
                 {
@@ -861,13 +879,15 @@ namespace HDRCalibrate.ViewModels
             var settings = BuildSettings();
             settings.Validate();
 
-            var action = settings.IsNeutral() ? "entfernt" : "neu geladen";
             var confirmation = MessageBox.Show(
-                "Für die SDR-Korrektur wird der Desktop Window Manager einmal " + action + ". " +
-                "Der Bildschirm kann dabei kurz schwarz werden. Es werden ausschließlich 24 freigegebene Konstanten " +
-                "in den sechs originalen SDR→scRGB-Funktionen geändert; Container, ABI, Aon9-Linkage, native HDR-Shader " +
-                "und Anwendungen bleiben unverändert. Fortfahren?",
-                "DWM-SDR-Korrektur anwenden",
+                settings.IsNeutral()
+                    ? "Die SDR-Korrektur wird entfernt: Der Desktop Window Manager wird einmal mit den unveränderten " +
+                      "Windows-Shadern neu gestartet. Der Bildschirm kann dabei kurz schwarz werden. Fortfahren?"
+                    : "Für die SDR-Korrektur wird der Desktop Window Manager einmal neu geladen. " +
+                      "Der Bildschirm kann dabei kurz schwarz werden. Es werden ausschließlich 24 freigegebene Konstanten " +
+                      "in den sechs originalen SDR→scRGB-Funktionen geändert; Container, ABI, Aon9-Linkage, native HDR-Shader " +
+                      "und Anwendungen bleiben unverändert. Fortfahren?",
+                settings.IsNeutral() ? "DWM-SDR-Korrektur entfernen" : "DWM-SDR-Korrektur anwenden",
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Warning,
                 MessageBoxResult.No);
@@ -939,6 +959,16 @@ namespace HDRCalibrate.ViewModels
 
         private void HandleApplyFailure(Exception ex)
         {
+            if (ex is DwmElevationCancelledException)
+            {
+                // A declined UAC prompt started no helper: DWM was not touched, so
+                // the successful test stays valid exactly like a cooldown rejection.
+                RefreshRestartCooldown();
+                IsError = false;
+                StatusMessage = "Administratorabfrage abgebrochen; DWM wurde nicht verändert." +
+                    (IsCurrentSettingsTested ? " Der erfolgreiche Test bleibt gültig." : string.Empty);
+                return;
+            }
             if (ex is DwmRestartCooldownException)
             {
                 // The service rejects before creating a request or starting a
@@ -1110,16 +1140,12 @@ namespace HDRCalibrate.ViewModels
             }
         }
 
-        private int RestoreLegacyProfiles()
+        private LegacyProfileCleanupResult RestoreLegacyProfiles()
         {
-            var restored = 0;
-            foreach (var display in _displayService.GetActiveDisplays())
-            {
-                if (_profileService.GetState(display) == null) continue;
-                _profileService.Reset(display);
-                restored++;
-            }
-            return restored;
+            return LegacyProfileCleanup.Run(
+                _displayService.GetActiveDisplays,
+                display => _profileService.GetState(display) != null,
+                _profileService.Reset);
         }
 
         private CalibrationSettings BuildSettings()
@@ -1342,6 +1368,7 @@ namespace HDRCalibrate.ViewModels
             var policy = _startupActivationPolicy;
             var wasEnabled = policy?.Enabled == true;
             var wasRevoked = policy?.ApprovalRevoked == true;
+            if (wasEnabled) _enabledStartupApprovalRevoked = true;
             if (policy != null)
             {
                 try
@@ -1530,9 +1557,9 @@ namespace HDRCalibrate.ViewModels
             (ToggleStartupActivationCommand as RelayCommand)?.RaiseCanExecuteChanged();
         }
 
-        private static string FormatLegacyRestore(int count)
+        private static string FormatLegacyRestore(LegacyProfileCleanupResult result)
         {
-            return count <= 0 ? string.Empty : "; " + count + " alte MHC2-Zuordnung bereinigt";
+            return result?.Format() ?? string.Empty;
         }
 
         private static string FlattenException(Exception exception)

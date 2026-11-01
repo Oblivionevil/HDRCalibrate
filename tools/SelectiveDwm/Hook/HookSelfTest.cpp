@@ -529,12 +529,17 @@ int main() {
     MappedContractTests();
     NativeProloguePreparationTests();
 
+    // Simulate an earlier start that failed after MinHook initialization and
+    // the first hook. The production attach must complete instead of failing
+    // with MH_ERROR_ALREADY_INITIALIZED until the next DWM generation.
     const bool initialized = MH_Initialize() == MH_OK;
-    const bool candidateCreated = initialized && MH_CreateHook(reinterpret_cast<void*>(&NativeCandidate),
+    const bool partiallyCreated = initialized && MH_CreateHook(reinterpret_cast<void*>(&NativeCandidate),
         reinterpret_cast<void*>(&CandidateHook), reinterpret_cast<void**>(&g_candidateOriginal)) == MH_OK;
-    const bool flipCreated = candidateCreated && MH_CreateHook(reinterpret_cast<void*>(&NativeFlip),
-        reinterpret_cast<void*>(&IndependentFlipHook), reinterpret_cast<void**>(&g_flipOriginal)) == MH_OK;
-    const bool attached = flipCreated && MH_EnableHook(MH_ALL_HOOKS) == MH_OK;
+    const bool attached = partiallyCreated &&
+        AttachDetours(reinterpret_cast<void*>(&NativeCandidate), reinterpret_cast<void*>(&NativeFlip)) == ERROR_SUCCESS;
+    Check("minhook-attach-completes-after-partial-earlier-start", attached && g_candidateOriginal && g_flipOriginal);
+    Check("minhook-attach-retry-is-idempotent",
+        attached && AttachDetours(reinterpret_cast<void*>(&NativeCandidate), reinterpret_cast<void*>(&NativeFlip)) == ERROR_SUCCESS);
     Check("real-minhook-install-on-synthetic-functions", attached);
     if (!attached) return 1;
 
@@ -740,6 +745,30 @@ int main() {
     ExpectPassThrough("new-immutable-session-can-observe-with-old-session-pinned", &secondShared, Decision::Observe);
     Check("old-session-terminal-state-survives-rearm", shared.telemetry.lifecycle == Lifecycle::StoppedPinned);
     SelectiveDwmStop(nullptr);
+    Check("inflight-callback-count-balanced", InterlockedCompareExchange(&g_inflightCallbacks, 0, 0) == 0);
+
+    // Stopped sessions no longer exhaust the per-DWM session table, but are
+    // freed only at a moment without any detour that could still hold them.
+    auto* staleSession = static_cast<Session*>(HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(Session)));
+    auto* keptSession = static_cast<Session*>(HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(Session)));
+    if (staleSession && keptSession) {
+        staleSession->stopped = 1;
+        g_sessions[0] = staleSession;
+        g_sessions[1] = keptSession;
+        g_sessionCount = 2;
+        InterlockedIncrement(&g_inflightCallbacks);
+        ReclaimStoppedSessions();
+        Check("busy-detour-keeps-stopped-session-pinned", g_sessionCount == 2 && g_sessions[0] == staleSession);
+        InterlockedDecrement(&g_inflightCallbacks);
+        ReclaimStoppedSessions();
+        Check("quiescent-reclaim-frees-only-stopped-sessions",
+            g_sessionCount == 1 && g_sessions[0] == keptSession && !g_sessions[1]);
+        g_sessions[0] = nullptr;
+        g_sessionCount = 0;
+        HeapFree(GetProcessHeap(), 0, keptSession);
+    } else {
+        Check("reclaim-test-allocation", false);
+    }
 
     // Only this synthetic host removes its own temporary test hooks. Production
     // DWM stop never executes these MinHook detach/uninitialize operations.

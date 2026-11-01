@@ -16,7 +16,7 @@ namespace HDRCalibrate.Tests
     /// </summary>
     internal static class SetupTests
     {
-        private const string Version = "1.7.3";
+        private const string Version = "1.7.4";
 
         internal sealed class MemoryRegistry : ISetupRegistry
         {
@@ -48,6 +48,14 @@ namespace HDRCalibrate.Tests
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(linkPath));
                 File.WriteAllText(linkPath, targetPath + "|" + workingDirectory + "|" + iconPath);
+            }
+        }
+
+        internal sealed class ThrowingShortcutWriter : IShortcutWriter
+        {
+            public void Create(string linkPath, string targetPath, string workingDirectory, string iconPath)
+            {
+                throw new IOException("Startmenü gesperrt");
             }
         }
 
@@ -400,7 +408,8 @@ namespace HDRCalibrate.Tests
                 Check(Directory.GetFiles(sandbox.Install).Select(Path.GetFileName).SequenceEqual(new[] { "notes.txt" })
                     && !Directory.Exists(Path.Combine(sandbox.Install, "Native")),
                     "Uninstall left owned files or removed a foreign file.");
-                Check(result.RemainingDirectory == sandbox.Install && result.RetainedNativeDirectories.Count == 0,
+                Check(result.RemainingDirectory == sandbox.Install && result.RetainedNativeDirectories.Count == 0
+                    && result.ForeignEntriesRemain && result.IsComplete,
                     "The folder with a foreign file was not reported as kept.");
                 Check(sandbox.Registry.GetString(ProductInfo.RunKey, ProductInfo.RunValueName) == null
                     && !sandbox.Registry.KeyExists(ProductInfo.UninstallKey), "Own registry state remains.");
@@ -427,7 +436,8 @@ namespace HDRCalibrate.Tests
                     && File.Exists(Path.Combine(native, ProductInfo.NativeHookFileName))
                     && File.Exists(Path.Combine(native, ProductInfo.NativeLicenseFileName)),
                     "A locked native hook was not retained together with its license.");
-                Check(result.RemainingDirectory == sandbox.Install && !File.Exists(Path.Combine(sandbox.Install, "HDRCalibrate.exe")),
+                Check(result.RemainingDirectory == sandbox.Install && !File.Exists(Path.Combine(sandbox.Install, "HDRCalibrate.exe"))
+                    && !result.ForeignEntriesRemain && result.IsComplete,
                     "Uninstall did not remove the application next to a retained native folder.");
                 Check(NativeFiles.RemoveAll(sandbox.Install, new NullSetupLog()).Count == 0
                     && !Directory.Exists(Path.Combine(sandbox.Install, "Native")), "The released native folder was not removable.");
@@ -440,6 +450,83 @@ namespace HDRCalibrate.Tests
                 var result = new UninstallEngine(sandbox.Context).Uninstall(package.Manifest);
                 Check(result.RemainingDirectory == null && !Directory.Exists(sandbox.Install),
                     "The setup-created folder was not removed.");
+            }
+        }
+
+        public static void UninstallKeepsEntryWhileOwnedFilesRemain()
+        {
+            using (var sandbox = new Sandbox())
+            {
+                var package = Package(PackageFiles());
+                new InstallEngine(sandbox.Context).Install(package, sandbox.SetupExecutable,
+                    new InstallOptions { DesktopShortcut = true, Autostart = true });
+                var locked = Path.Combine(sandbox.Install, "HDRCalibrate.Dwm.dll");
+                UninstallResult first;
+                // Without delete sharing the owned file cannot be removed.
+                using (new FileStream(locked, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    first = new UninstallEngine(sandbox.Context).Uninstall(package.Manifest);
+                Check(!first.IsComplete && first.FailedFiles.SequenceEqual(new[] { "HDRCalibrate.Dwm.dll" }),
+                    "An undeletable owned file was not reported.");
+                Check(sandbox.Registry.KeyExists(ProductInfo.UninstallKey)
+                    && File.Exists(Path.Combine(sandbox.Install, ProductInfo.SetupExeName))
+                    && File.Exists(Path.Combine(sandbox.Install, ProductInfo.RecordFileName)),
+                    "The Apps entry or its uninstaller was removed although owned files remain.");
+                Check(!first.ForeignEntriesRemain && first.RemainingDirectory == sandbox.Install,
+                    "Owned leftovers were reported as files that Setup did not install.");
+                Check(!File.Exists(Path.Combine(sandbox.Install, "HDRCalibrate.exe"))
+                    && !File.Exists(sandbox.Locations.StartMenuShortcut)
+                    && sandbox.Registry.GetString(ProductInfo.RunKey, ProductInfo.RunValueName) == null,
+                    "The incomplete uninstall did not remove the removable state.");
+
+                var second = new UninstallEngine(sandbox.Context).Uninstall(package.Manifest);
+                Check(second.IsComplete && !Directory.Exists(sandbox.Install)
+                    && !sandbox.Registry.KeyExists(ProductInfo.UninstallKey),
+                    "Repeating the uninstall did not complete it.");
+            }
+        }
+
+        public static void UpgradeRemovesObsoleteOwnedFiles()
+        {
+            using (var sandbox = new Sandbox())
+            {
+                var old = PackageFiles("old");
+                old["Old.Obsolete.dll"] = Encoding.UTF8.GetBytes("obsolete");
+                old["Locked.Obsolete.dll"] = Encoding.UTF8.GetBytes("locked");
+                new InstallEngine(sandbox.Context).Install(Package(old), sandbox.SetupExecutable, new InstallOptions());
+                File.WriteAllText(Path.Combine(sandbox.Install, "notes.txt"), "user");
+                var locked = Path.Combine(sandbox.Install, "Locked.Obsolete.dll");
+                using (new FileStream(locked, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    new InstallEngine(sandbox.Context).Install(Package(PackageFiles()), sandbox.SetupExecutable, new InstallOptions());
+                Check(!File.Exists(Path.Combine(sandbox.Install, "Old.Obsolete.dll")),
+                    "A file the new package no longer contains stayed installed.");
+                Check(File.Exists(locked) && File.ReadAllText(Path.Combine(sandbox.Install, "notes.txt")) == "user",
+                    "A locked obsolete file or a foreign file was touched.");
+                var record = InstallationRecord.Read(sandbox.Install, null);
+                Check(!record.Files.Contains("Old.Obsolete.dll") && record.Files.Contains("Locked.Obsolete.dll"),
+                    "The record does not reflect the removed and the retained obsolete file.");
+                Check(!Directory.GetDirectories(sandbox.Install, ProductInfo.BackupDirectoryPrefix + "*").Any(),
+                    "The update left its backup folder behind.");
+                new UninstallEngine(sandbox.Context).Uninstall(Package(PackageFiles()).Manifest);
+                Check(!File.Exists(locked), "A retained obsolete file was no longer owned by the uninstaller.");
+            }
+        }
+
+        public static void RegistrationFailureIsReportedHonestly()
+        {
+            using (var sandbox = new Sandbox())
+            {
+                var context = new SetupContext(sandbox.Locations, sandbox.Registry, new ThrowingShortcutWriter(),
+                    sandbox.Stopper, new SetupText(true), null);
+                var failure = Expect<SetupException>(() => new InstallEngine(context).Install(
+                    Package(PackageFiles()), sandbox.SetupExecutable, new InstallOptions()),
+                    "A failed shortcut was hidden.");
+                Check(failure.Message == context.Text.RegistrationFailed(Version, "Startmenü gesperrt") && !failure.ChangesRolledBack,
+                    "A registration failure after the commit was reported as a failed or rolled back install.");
+                Check(File.ReadAllText(Path.Combine(sandbox.Install, "HDRCalibrate.exe")) == "app new"
+                    && sandbox.Registry.GetString(ProductInfo.UninstallKey, "DisplayVersion") == Version,
+                    "The committed files or the uninstall entry are missing.");
+                new InstallEngine(sandbox.Context).Install(Package(PackageFiles()), sandbox.SetupExecutable, new InstallOptions());
+                Check(File.Exists(sandbox.Locations.StartMenuShortcut), "Repeating Setup did not complete the registration.");
             }
         }
 

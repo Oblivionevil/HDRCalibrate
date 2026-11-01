@@ -153,8 +153,7 @@ namespace HDRCalibrate.Services
             var currentWindowsEnvironment = CaptureCurrentWindowsEnvironment(windowsEnvironmentIdentityProvider);
             if (!testedWindowsEnvironment.Matches(currentWindowsEnvironment))
                 throw new InvalidDataException("Windows oder seine DWM-Komponenten wurden während des Tests geändert. Bitte erneut testen.");
-            if (!string.Equals(testedWindowsEnvironment.DwmCoreSha256,
-                DwmCoreInspector.SupportedDwmCoreSha256, StringComparison.OrdinalIgnoreCase))
+            if (!DwmCoreInspector.IsSupportedBuild(testResponse.DwmCoreVersion, testedWindowsEnvironment.DwmCoreSha256))
                 throw new InvalidDataException("Die getestete Windows-DWM-Komponente ist nicht für diese Programmversion freigegeben.");
 
             var policy = new PersistedStartupActivationPolicy
@@ -276,8 +275,7 @@ namespace HDRCalibrate.Services
                 ValidateStoredPolicy(policy, false);
                 return string.Equals(policy.AppVersion, appVersion, StringComparison.Ordinal)
                     && string.Equals(policy.HelperVersion, helperVersion, StringComparison.Ordinal)
-                    && string.Equals(policy.DwmCoreVersion, DwmCoreInspector.SupportedDwmCoreVersion, StringComparison.Ordinal)
-                    && string.Equals(policy.DwmCoreSha256, DwmCoreInspector.SupportedDwmCoreSha256, StringComparison.OrdinalIgnoreCase)
+                    && DwmCoreInspector.IsSupportedBuild(policy.DwmCoreVersion, policy.DwmCoreSha256)
                     && string.Equals(policy.PatchImplementationId, DwmPatchSafety.PatchImplementationId, StringComparison.Ordinal)
                     && policy.WindowsEnvironment.Matches(CaptureCurrentWindowsEnvironment(windowsEnvironmentIdentityProvider));
             }

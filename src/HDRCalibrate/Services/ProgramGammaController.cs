@@ -215,6 +215,8 @@ namespace HDRCalibrate.Services
                 case 22: return "Programm-, Fenster- oder DWM-Identität stimmt nicht mehr überein.";
                 case 23: return "Die Freigabe über den überwachten Gamma-Kanal wurde nicht bestätigt.";
                 case 24: return "Eine andere DWM-Hook-Version ist noch geladen. Eine neue DWM-Sitzung und ein erneuter globaler Test sind nötig; kein automatischer Neustart.";
+                case 25: return "In dieser DWM-Sitzung sind keine weiteren Gamma-Sitzungen möglich, weil frühere noch nicht freigegeben werden konnten. Nach einem DWM-Neustart (globale Korrektur erneut testen und anwenden) ist es wieder verfügbar; kein automatischer Neustart.";
+                case 26: return "Der native Gamma-Hook konnte in DWM nicht gestartet werden; es ist keine Programmauswahl aktiv. Ein erneuter Test ist möglich; Details im Helferstatus.";
                 default: return "Der native SDR-Auswahltest wurde nicht vollständig bestätigt (Exitcode " + code + "). Details im Helferstatus prüfen; nicht automatisch erneut anwenden.";
             }
         }

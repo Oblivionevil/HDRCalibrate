@@ -1,7 +1,7 @@
 <Window x:Class="HDRCalibrate.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="HDR Calibrate 1.7.3 · SDR-Gamma und Programme"
+        Title="HDR Calibrate 1.7.4 · SDR-Gamma und Programme"
         Icon="/HDRCalibrate;component/Assets/HDRCalibrate.ico"
         Width="1160" Height="820" MinWidth="960" MinHeight="700"
         WindowStartupLocation="CenterScreen"
@@ -347,7 +347,7 @@
                 </Ellipse>
                 <TextBlock Grid.Column="1" Text="{Binding StatusMessage}" Foreground="{StaticResource MutedBrush}"
                            TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
-                <TextBlock Grid.Column="2" Text="v1.7.3 · SDR-Gamma · WPF · .NET Framework 4.8.1" Foreground="#65758B" FontSize="11" />
+                <TextBlock Grid.Column="2" Text="v1.7.4 · SDR-Gamma · WPF · .NET Framework 4.8.1" Foreground="#65758B" FontSize="11" />
             </Grid>
         </Border>
     </Grid>
