@@ -1,5 +1,8 @@
 # HDR Calibrate 1.7.5
 
+[![Downloads gesamt](https://img.shields.io/github/downloads/Oblivionevil/HDRCalibrate/total?label=Downloads%20gesamt)](https://github.com/Oblivionevil/HDRCalibrate/releases)
+[![Downloads aktuelle Version](https://img.shields.io/github/downloads/Oblivionevil/HDRCalibrate/latest/total?label=Downloads%20aktuelle%20Version)](https://github.com/Oblivionevil/HDRCalibrate/releases/latest)
+
 Portables WPF-Tool für Windows 11 und .NET Framework 4.8.1. Es passt bei
 aktiviertem Windows-HDR ausschließlich die von DWM zusammengesetzten
 SDR-Flächen an. Anwendungen werden nicht gehookt und Windows-Dateien werden
