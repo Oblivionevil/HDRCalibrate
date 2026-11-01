@@ -27,13 +27,23 @@ namespace HDRCalibrate.Setup.Core
             _log = log ?? new NullSetupLog();
         }
 
+        /// <summary>
+        /// Present while a transaction may still need its backup: from the first
+        /// moved file until Commit or a complete Rollback. A backup that keeps it
+        /// (failed rollback, interrupted setup) holds the only previous copies.
+        /// </summary>
+        public const string PendingMarkerFileName = "transaction-pending.txt";
+
         public void Put(string sourceFile, string relativePath)
         {
             if (_completed) throw new InvalidOperationException("Die Dateitransaktion ist bereits abgeschlossen.");
             var target = SetupPaths.Combine(_root, relativePath);
+            // Before any directory is created: a junction on the way (for example
+            // Native) would otherwise redirect the write outside the root.
+            var reparsePoint = FindReparsePoint(target);
+            if (reparsePoint != null)
+                throw new IOException("Der Zielpfad enthält einen Reparse-Punkt: " + reparsePoint);
             EnsureDirectory(Path.GetDirectoryName(target));
-            if (SetupPaths.IsReparsePoint(target))
-                throw new IOException("Das Ziel ist ein Reparse-Punkt: " + target);
             if (File.Exists(target)) MoveToBackup(target);
             try
             {
@@ -58,8 +68,8 @@ namespace HDRCalibrate.Setup.Core
         {
             if (_completed) throw new InvalidOperationException("Die Dateitransaktion ist bereits abgeschlossen.");
             var target = SetupPaths.Combine(_root, relativePath);
+            if (FindReparsePoint(target) != null) return false;
             if (!File.Exists(target)) return true;
-            if (SetupPaths.IsReparsePoint(target)) return false;
             try
             {
                 MoveToBackup(target);
@@ -79,6 +89,10 @@ namespace HDRCalibrate.Setup.Core
             {
                 Directory.CreateDirectory(_backupDirectory);
                 File.SetAttributes(_backupDirectory, FileAttributes.Directory | FileAttributes.Hidden);
+                // Written before the first move, so even an interrupted setup keeps it.
+                File.WriteAllText(Path.Combine(_backupDirectory, PendingMarkerFileName),
+                    "HDR Calibrate Setup: Sicherung einer nicht abgeschlossenen Dateitransaktion. " +
+                    "Sie wird erst nach einer späteren erfolgreichen Installation entfernt.\r\n");
             }
             var backup = Path.Combine(_backupDirectory, _replaced.Count.ToString("D4") + "-" + Path.GetFileName(target));
             File.Move(target, backup);
@@ -88,6 +102,7 @@ namespace HDRCalibrate.Setup.Core
         public void Commit()
         {
             _completed = true;
+            TryDeletePendingMarker();
             TryDeleteBackupDirectory();
         }
 
@@ -120,9 +135,34 @@ namespace HDRCalibrate.Setup.Core
                 try { Directory.Delete(directory, false); }
                 catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException) { }
             }
-            // Keep backups that could not be restored; they are the only copy.
-            if (complete) TryDeleteBackupDirectory();
+            // Keep backups that could not be restored; they are the only copy, and
+            // the pending marker protects them from the next run's cleanup.
+            if (complete)
+            {
+                TryDeletePendingMarker();
+                TryDeleteBackupDirectory();
+            }
+            else
+            {
+                _log.Write("Unvollständige Rücknahme; Sicherung bleibt erhalten: " + _backupDirectory);
+            }
             return complete;
+        }
+
+        private void TryDeletePendingMarker()
+        {
+            try { File.Delete(Path.Combine(_backupDirectory, PendingMarkerFileName)); }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException) { }
+        }
+
+        /// <returns>The first reparse point from the root down to the target, or null.</returns>
+        private string FindReparsePoint(string target)
+        {
+            var path = new Stack<string>();
+            for (var current = target; current != null && current.Length >= _root.Length;
+                 current = Path.GetDirectoryName(current))
+                path.Push(current);
+            return path.FirstOrDefault(SetupPaths.IsReparsePoint);
         }
 
         private void EnsureDirectory(string directory)
@@ -165,7 +205,12 @@ namespace HDRCalibrate.Setup.Core
         }
 
         /// <summary>Removes backups left by an earlier run whose files could not be deleted then.</summary>
-        public static void DeleteStaleBackups(string root, ISetupLog log)
+        /// <param name="includePending">
+        /// Also removes backups of unfinished transactions. Only valid once a later
+        /// transaction committed (or the application was removed): their previous
+        /// files are superseded then, while before that they are the only copy.
+        /// </param>
+        public static void DeleteStaleBackups(string root, ISetupLog log, bool includePending = false)
         {
             if (!Directory.Exists(root)) return;
             foreach (var directory in Directory.GetDirectories(root, ProductInfo.BackupDirectoryPrefix + "*"))
@@ -174,6 +219,11 @@ namespace HDRCalibrate.Setup.Core
                 if (name.Length != ProductInfo.BackupDirectoryPrefix.Length + 32 || SetupPaths.IsReparsePoint(directory)
                     || Directory.GetDirectories(directory).Length != 0)
                     continue;
+                if (!includePending && File.Exists(Path.Combine(directory, PendingMarkerFileName)))
+                {
+                    log?.Write("Sicherung einer unvollständigen Rücknahme bleibt erhalten: " + directory);
+                    continue;
+                }
                 foreach (var file in Directory.GetFiles(directory))
                 {
                     try

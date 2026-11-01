@@ -78,10 +78,17 @@ namespace HDRCalibrate.Setup.Core
                 var owned = OwnedFiles(directory, record, manifest).ToList();
                 foreach (var relative in owned.Where(file => !IsUninstallerFile(file)))
                     if (!NativeFiles.TryDelete(SetupPaths.Combine(directory, relative), log)) failed.Add(relative);
+                // The record before the registered uninstaller: a kept Apps entry must
+                // always still find its EXE.
                 if (failed.Count == 0)
-                    foreach (var relative in owned.Where(IsUninstallerFile))
-                        if (!TryDeleteUninstallerFile(SetupPaths.Combine(directory, relative), log)) failed.Add(relative);
-                FileTransaction.DeleteStaleBackups(directory, log);
+                    foreach (var relative in new[] { ProductInfo.RecordFileName, ProductInfo.SetupExeName })
+                    {
+                        if (TryDeleteUninstallerFile(SetupPaths.Combine(directory, relative), log)) continue;
+                        failed.Add(relative);
+                        break;
+                    }
+                // Once every owned file is gone, unfinished update backups are obsolete too.
+                FileTransaction.DeleteStaleBackups(directory, log, failed.Count == 0);
             }
 
             var locations = _context.Locations;
@@ -118,8 +125,11 @@ namespace HDRCalibrate.Setup.Core
                     if (retained.Count != 0) expected.Add(ProductInfo.NativeDirectoryName);
                     try
                     {
+                        // A still locked update backup is Setup's own leftover, not a foreign file.
                         foreign = Directory.EnumerateFileSystemEntries(directory)
-                            .Any(entry => !expected.Contains(Path.GetFileName(entry)));
+                            .Select(Path.GetFileName)
+                            .Any(name => !expected.Contains(name)
+                                && !name.StartsWith(ProductInfo.BackupDirectoryPrefix, StringComparison.OrdinalIgnoreCase));
                     }
                     catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException) { foreign = true; }
                 }

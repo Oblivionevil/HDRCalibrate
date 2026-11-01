@@ -69,6 +69,9 @@ namespace HDRCalibrate.Tests
             };
         }
 
+        /// <summary>A committed-evidence approval for view-model tests (no DWM access).</summary>
+        internal static ProgramGammaApproval CreateValidApprovalForTests() => Approve(ValidEvidence());
+
         private static ProgramGammaApproval Approve(Evidence evidence, Func<bool> isStillValid = null)
         {
             return ProgramGammaApproval.CreateFromCommittedApply(evidence.Response, evidence.State,

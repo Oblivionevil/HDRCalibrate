@@ -19,4 +19,20 @@
     <ProjectReference Include="..\..\installer\HDRCalibrate.Setup\HDRCalibrate.Setup.csproj" />
     <Reference Include="System.IO.Compression" />
   </ItemGroup>
+  <!-- The view-model tests bind startup approvals to the helper's file version,
+       so the helper must sit next to HDRCalibrate.exe in this output as well. -->
+  <Target Name="CopyDwmHelper" AfterTargets="Build">
+    <MSBuild Projects="..\..\src\HDRCalibrate.DwmHelper\HDRCalibrate.DwmHelper.csproj"
+             Targets="Build"
+             BuildInParallel="false"
+             Properties="Configuration=$(Configuration);Platform=$(Platform);TargetFramework=$(TargetFramework)">
+      <Output TaskParameter="TargetOutputs" ItemName="DwmHelperTargetPath" />
+    </MSBuild>
+    <ItemGroup>
+      <DwmHelperFiles Include="@(DwmHelperTargetPath)" />
+      <DwmHelperFiles Include="@(DwmHelperTargetPath->'%(FullPath).config')"
+                      Condition="Exists('%(DwmHelperTargetPath.FullPath).config')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(DwmHelperFiles)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="false" />
+  </Target>
 </Project>

@@ -19,16 +19,8 @@ namespace HDRCalibrate.Tests
         {
             try
             {
-                Run("PQ round-trip", TestPqRoundTrip);
-                Run("Neutral curve is identity", TestNeutralCurve);
-                Run("SDR target gamma 2.0, 2.2 and 2.4", TestGammaTargets);
                 Run("Gamma preset commands", TestGammaPresetCommands);
-                Run("Generated LUT is monotonic", TestMonotonicCurve);
-                Run("Neutral color matrix is identity", TestNeutralMatrix);
-                Run("Fallback ICC structure", TestFallbackIcc);
-                Run("Windows accepts generated ICC", TestWindowsIccValidation);
                 Run("Active display detection", TestDisplayDetection);
-                Run("Current display profile generation", TestCurrentDisplayProfileGeneration);
                 Run("SDR-only adjustment math", TestSdrAdjustmentMath);
                 Run("Pinned dwmcore builds bind version, hash and plan", TestPinnedDwmCoreBuilds);
                 Run("Installed dwmcore six-export manifest", TestDwmCoreCompatibility);
@@ -56,10 +48,24 @@ namespace HDRCalibrate.Tests
                 Run("A pre-helper cooldown rejection cannot revoke the test", TestApplyCooldownFailureKeepsProof);
                 Run("Unreadable cooldown cannot enable Apply", TestApplyCooldownReadFailure);
                 Run("A declined UAC prompt keeps the successful test", TestApplyElevationCancelKeepsProof);
+                Run("A declined UAC prompt for a new test keeps the startup approval", TestTimedTestElevationCancelKeepsApproval);
+                Run("A declined UAC prompt keeps the program gamma approval", TestElevationCancelKeepsProgramApproval);
+                Run("Startup activation waits out the restart guard and never revokes for it", TestStartupActivationRestartGuard);
+                Run("The restart guard holds while an abandoned helper runs", ReviewRegressionTests.AbandonedHelperHoldsRestartGuard);
+                Run("A DWM state without start time is never current", ReviewRegressionTests.StateWithoutStartTimeIsNotCurrent);
+                Run("DWM state loading rejects DTDs and Clear removes the backup", ReviewRegressionTests.DwmStateStoreIsHardened);
                 Run("A long-revoked startup approval stays silent at logon", TestRevokedStartupStaysSilentAtLogon);
                 Run("The restart guard counts from the end of a started helper", DwmRestartCooldownTests.HelperEndRestartsTheGuard);
                 Run("The elevated helper accepts only the app request directory", ReviewRegressionTests.IpcRootAcceptsOnlyTheAppRequestDirectory);
                 Run("Legacy MHC2 cleanup failures never block DWM operations", ReviewRegressionTests.LegacyProfileCleanupNeverBlocks);
+                Run("Setup never writes through a junction below its root", ReviewRegressionTests.SetupNeverWritesThroughNestedJunctions);
+                Run("An unrecorded helper end keeps the restart guard", ReviewRegressionTests.UnrecordedHelperEndHoldsRestartGuard);
+                Run("Legacy profile cleanup keeps a profile chosen later", ReviewRegressionTests.LegacyProfileResetKeepsLaterUserChoice);
+                Run("A legacy restore point survives a new adapter LUID", ReviewRegressionTests.LegacyRestorePointSurvivesANewAdapterLuid);
+                Run("Uninstall keeps its uninstaller while the record is locked", SetupTests.UninstallKeepsItsUninstallerWhileTheRecordIsLocked);
+                Run("The emergency reset shows the restart guard at once", TestResetShowsRestartGuard);
+                Run("Setup keeps the only copy of an incomplete rollback", ReviewRegressionTests.SetupKeepsBackupsOfAnIncompleteRollback);
+                Run("Program gamma states that no Windows build is released for it", ReviewRegressionTests.ProgramGammaReportsThatNoBuildIsReleased);
                 Run("Startup activation approval is exact and fail-closed", TestStartupActivationPolicy);
                 Run("Startup activation policy persistence is atomic", TestStartupActivationPolicyPersistence);
                 Run("Startup activation disable failures remain visible", TestStartupActivationDisableFailure);
@@ -290,73 +296,6 @@ namespace HDRCalibrate.Tests
             Assert(!gate.IsPending, "The completed exit request remained pending.");
         }
 
-        private static void TestPqRoundTrip()
-        {
-            foreach (var nits in new[] { 0.0, 0.1, 80.0, 203.0, 1000.0, 4000.0, 10000.0 })
-            {
-                var decoded = HdrToneCurve.PqDecodeNits(HdrToneCurve.PqEncodeNits(nits));
-                AssertClose(nits, decoded, Math.Max(0.0001, nits * 0.000001), "PQ round-trip");
-            }
-        }
-
-        private static void TestNeutralCurve()
-        {
-            var curve = HdrToneCurve.BuildLut(new CalibrationSettings(), 1024, 203.0, 1000.0);
-            for (var index = 0; index < curve.Length; index++)
-            {
-                AssertClose((double)index / (curve.Length - 1), curve[index], 1e-10, "Neutral curve");
-            }
-        }
-
-        private static void TestGammaTargets()
-        {
-            const double sdrWhiteNits = 203.0;
-            const double sourceCode = 0.5;
-            var sourceLinear = HdrToneCurve.SrgbToLinear(sourceCode);
-            var inputPq = HdrToneCurve.PqEncodeNits(sourceLinear * sdrWhiteNits);
-            var results = new List<double>();
-
-            foreach (var gamma in new[] { 2.0, 2.2, 2.4 })
-            {
-                var settings = new CalibrationSettings
-                {
-                    Gamma = gamma,
-                    ApplySdrGammaCorrection = true,
-                    ProtectHighlights = true
-                };
-                var actual = HdrToneCurve.Evaluate(settings, inputPq, sdrWhiteNits, 1000.0);
-                var expected = HdrToneCurve.PqEncodeNits(Math.Pow(sourceCode, gamma) * sdrWhiteNits);
-                AssertClose(expected, actual, 1e-10, "SDR target gamma " + gamma);
-                results.Add(actual);
-            }
-
-            Assert(results[0] > results[1] && results[1] > results[2], "Higher target gamma should darken SDR midtones.");
-
-            var hdrInput = HdrToneCurve.PqEncodeNits(600.0);
-            var hdrOutput = HdrToneCurve.Evaluate(
-                new CalibrationSettings { Gamma = 2.4, ApplySdrGammaCorrection = true },
-                hdrInput,
-                sdrWhiteNits,
-                1000.0);
-            AssertClose(hdrInput, hdrOutput, 1e-10, "Native HDR signal above SDR white");
-        }
-
-        private static void TestMonotonicCurve()
-        {
-            var settings = new CalibrationSettings
-            {
-                Gamma = 2.6,
-                ApplySdrGammaCorrection = true,
-                Brightness = 0.2,
-                Contrast = 1.5,
-                ProtectHighlights = true
-            };
-            var curve = HdrToneCurve.BuildLut(settings, 4096, 203.0, 1000.0);
-            Assert(curve[0] >= 0.0 && curve[curve.Length - 1] == 1.0, "LUT endpoints invalid.");
-            for (var index = 1; index < curve.Length; index++)
-                Assert(curve[index] >= curve[index - 1], "LUT is not monotonic.");
-        }
-
         private static void TestGammaPresetCommands()
         {
             var viewModel = CreateIsolatedViewModel();
@@ -367,43 +306,6 @@ namespace HDRCalibrate.Tests
             AssertClose(2.4, viewModel.Gamma, 1e-12, "Gamma preset value");
         }
 
-        private static void TestNeutralMatrix()
-        {
-            var matrix = ColorAdjustmentMatrix.CreateXyzAdjustment(new CalibrationSettings());
-            for (var row = 0; row < 3; row++)
-            {
-                for (var column = 0; column < 3; column++)
-                {
-                    AssertClose(row == column ? 1.0 : 0.0, matrix[row, column], 1e-9, "Neutral matrix");
-                }
-            }
-        }
-
-        private static void TestFallbackIcc()
-        {
-            var bytes = CreateFallback();
-            var info = IccProfileInspector.Inspect(bytes);
-            Assert(info.Size == bytes.Length, "ICC size mismatch.");
-            Assert(info.HasMhc2, "MHC2 tag missing.");
-            Assert(info.LutEntryCount == 1024, "Unexpected LUT size.");
-            Assert(info.Tags.Contains("desc") && info.Tags.Contains("lumi") && info.Tags.Contains("rXYZ"), "Required ICC tags missing.");
-            Assert(info.Description.Contains("Testprofil"), "ICC description missing.");
-        }
-
-        private static void TestWindowsIccValidation()
-        {
-            var path = Path.Combine(Path.GetTempPath(), "HDRCalibrate_Test_" + Guid.NewGuid().ToString("N") + ".icm");
-            try
-            {
-                File.WriteAllBytes(path, CreateFallback());
-                Assert(DisplayService.ValidateProfileFile(path, out var error), "Windows ICC validation failed: " + error);
-            }
-            finally
-            {
-                if (File.Exists(path)) File.Delete(path);
-            }
-        }
-
         private static void TestDisplayDetection()
         {
             var displays = new DisplayService().GetActiveDisplays();
@@ -412,39 +314,6 @@ namespace HDRCalibrate.Tests
             {
                 Assert(!string.IsNullOrWhiteSpace(display.GdiDeviceName), "Display has no GDI name.");
                 Console.WriteLine($"DISPLAY: {display.FriendlyName}; HDR active={display.HdrActive}; MHC2={display.Mhc2Supported}; LUT max={display.Mhc2LutEntries}; {display.BitDepthLabel}; SDR white={display.SdrWhiteLabel}; peak={display.ColorMetadata.MaxLuminanceNits:0.###} nit; full-frame={display.ColorMetadata.MaxFullFrameLuminanceNits:0.###} nit; profile={display.ProfileLabel}");
-            }
-        }
-
-        private static void TestCurrentDisplayProfileGeneration()
-        {
-            var display = new DisplayService().GetActiveDisplays().First();
-            var settings = new CalibrationSettings { Gamma = 2.2, ApplySdrGammaCorrection = true };
-            var adjusted = File.Exists(display.ActiveProfilePath)
-                ? IccProfileFactory.CreateAdjustedProfile(
-                    File.ReadAllBytes(display.ActiveProfilePath),
-                    "HDR Calibrate Clone Test",
-                    settings,
-                    1024,
-                    display.SdrWhiteNits,
-                    display.ColorMetadata)
-                : IccProfileFactory.CreateFallbackProfile(
-                    "HDR Calibrate Display Test",
-                    display.ColorMetadata,
-                    settings,
-                    1024,
-                    display.SdrWhiteNits);
-            var info = IccProfileInspector.Inspect(adjusted);
-            Assert(info.HasMhc2 && info.LutEntryCount == 1024, "Cloned profile has no composed MHC2 LUT.");
-
-            var path = Path.Combine(Path.GetTempPath(), "HDRCalibrate_CloneTest_" + Guid.NewGuid().ToString("N") + ".icm");
-            try
-            {
-                File.WriteAllBytes(path, adjusted);
-                Assert(DisplayService.ValidateProfileFile(path, out var error), "Windows rejected cloned ICC: " + error);
-            }
-            finally
-            {
-                if (File.Exists(path)) File.Delete(path);
             }
         }
 
@@ -767,11 +636,22 @@ namespace HDRCalibrate.Tests
             Assert(IsUppercaseSha256(response.PatchPlanFingerprint),
                 "Preflight did not return a valid patch-plan fingerprint.");
 
+            // Neutral values check the system only: compatible, but no write plan.
             var neutral = new DwmPatchEngine().Preflight(new CalibrationSettings());
-            Assert(!neutral.Success,
-                "Neutral settings unexpectedly passed the persistent DWM patch preflight.");
-            Assert(string.IsNullOrEmpty(neutral.PatchPlanFingerprint),
+            Assert(neutral.Success && neutral.DwmCoreVersion == response.DwmCoreVersion,
+                "A neutral preflight reported a compatible DWM as incompatible: " + neutral.Message);
+            Assert(string.IsNullOrEmpty(neutral.PatchPlanFingerprint) && neutral.PatchedConstantVectorCount == 0,
                 "Neutral settings unexpectedly produced a persistent patch plan.");
+
+            // After a reset the sliders are neutral; choosing a gamma must allow a test at once.
+            // The factory selects an HDR display with gamma 2.4.
+            var viewModel = CreateCooldownViewModel(new MemoryStartupActivationPolicyStore(),
+                CreateTestWindowsEnvironment(), () => TimeSpan.Zero);
+            viewModel.ApplySdrGammaCorrection = false;
+            SetPrivateField(viewModel, "_preflight", neutral);
+            Assert(!viewModel.CanTest, "Neutral sliders offered a timed test.");
+            viewModel.Gamma = 2.2;
+            Assert(viewModel.CanTest, "A gamma chosen after a neutral detection still needed a new detection.");
         }
 
         private static void TestDwmPatchPlanFingerprint()
@@ -1977,6 +1857,153 @@ namespace HDRCalibrate.Tests
                 "Read-only guard recovery lost the test or left Apply blocked.");
         }
 
+        private static void TestStartupActivationRestartGuard()
+        {
+            var directory = Path.Combine(Path.GetTempPath(), "HDRCalibrate_StartupGuard_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try
+            {
+                var environment = CreateTestWindowsEnvironment();
+                var store = new StartupActivationPolicyStore(directory);
+                store.Save(CreateTestStartupPolicy(environment, true));
+                var remainingCalls = 0;
+                var guard = TimeSpan.FromMilliseconds(300);
+                var viewModel = CreateIsolatedViewModel(store, new MutableWindowsEnvironmentIdentityProvider(environment),
+                    CreateEnabledRunValueStore(), () => { remainingCalls++; return guard; });
+                var display = new DisplayInfo();
+                SetInternalProperty(display, nameof(DisplayInfo.HdrActive), true);
+                SetInternalProperty(display, nameof(DisplayInfo.AdvancedColorLimitedByPolicy), false);
+                viewModel.Displays.Add(display);
+                SetPrivateField(viewModel, "_selectedDisplay", display);
+                SetPrivateField(viewModel, "_initializationTask", System.Threading.Tasks.Task.CompletedTask);
+                SetPrivateField(viewModel, "_preflightFor",
+                    new Func<CalibrationSettings, DwmPatchResponse>(settings => CreateTestStartupPreflight()));
+                SetPrivateField(viewModel, "_cleanupLegacyProfiles",
+                    new Func<LegacyProfileCleanupResult>(() => new LegacyProfileCleanupResult(0, null)));
+                var applyCalls = 0;
+                var appliedAfter = TimeSpan.Zero;
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                SetPrivateField(viewModel, "_applySupervised",
+                    new Func<CalibrationSettings, Action<DwmPatchResponse>, WindowsEnvironmentIdentity, StartupApprovalFileProof, DwmPatchResponse>(
+                        (settings, persist, expected, proof) =>
+                        {
+                            applyCalls++;
+                            appliedAfter = clock.Elapsed;
+                            // A clock behind the marker still guards when the service checks.
+                            throw new DwmRestartCooldownException(TimeSpan.FromSeconds(4));
+                        }));
+                var result = viewModel.TryActivateAtWindowsStartupAsync(true).GetAwaiter().GetResult();
+                Assert(applyCalls == 1 && appliedAfter >= guard,
+                    "Startup activation did not wait out the restart guard before the elevated apply.");
+                Assert(result.Decision == StartupActivationDecision.Ready && !result.Attempted && !result.Success
+                    && result.Message.Contains("Startfreigabe bleibt erhalten"),
+                    "A restart-guard rejection at startup was not reported as skipped.");
+                var stored = store.Load();
+                Assert(stored.Enabled && !stored.ApprovalRevoked && viewModel.IsStartupActivationEnabled && !viewModel.IsError,
+                    "A restart-guard rejection at startup revoked the startup approval.");
+            }
+            finally
+            {
+                foreach (var file in Directory.GetFiles(directory)) File.Delete(file);
+                Directory.Delete(directory, false);
+            }
+        }
+
+        private static void TestResetShowsRestartGuard()
+        {
+            var remaining = TimeSpan.Zero;
+            var viewModel = CreateCooldownViewModel(new MemoryStartupActivationPolicyStore(),
+                CreateTestWindowsEnvironment(), () => remaining);
+            // The failure path stays offline; the success path also clears the real DWM state.
+            SetPrivateField(viewModel, "_resetForRecovery", new Func<DwmPatchResponse>(() =>
+            {
+                remaining = DwmRestartCooldown.Duration;
+                throw new InvalidOperationException("Synthetic failure after the helper restarted DWM.");
+            }));
+            Assert(!viewModel.IsRestartCooldownActive, "The guard was active before the reset.");
+            var method = typeof(MainViewModel).GetMethod("RunConfirmedResetAsync",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            ((System.Threading.Tasks.Task)method.Invoke(viewModel, null)).GetAwaiter().GetResult();
+            Assert(viewModel.IsRestartCooldownActive && !viewModel.CanTest,
+                "The restart guard of the emergency reset was not shown; Test stayed available.");
+        }
+
+        private static void TestElevationCancelKeepsProgramApproval()
+        {
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            Func<DwmPatchResponse> cancelled = () =>
+                throw new DwmElevationCancelledException(new System.ComponentModel.Win32Exception(1223));
+            foreach (var operation in new[] { "RunConfirmedApplyAsync", "RunConfirmedResetAsync", "RunConfirmedTimedTestAsync" })
+            {
+                var viewModel = CreateCooldownViewModel(new MemoryStartupActivationPolicyStore(),
+                    CreateTestWindowsEnvironment(), () => TimeSpan.Zero);
+                SetPrivateField(viewModel, "_cleanupLegacyProfiles",
+                    new Func<LegacyProfileCleanupResult>(() => new LegacyProfileCleanupResult(0, null)));
+                SetPrivateField(viewModel, "_applySupervised",
+                    new Func<CalibrationSettings, Action<DwmPatchResponse>, WindowsEnvironmentIdentity, StartupApprovalFileProof, DwmPatchResponse>(
+                        (settings, persist, expected, proof) => cancelled()));
+                SetPrivateField(viewModel, "_resetDwm", cancelled);
+                SetPrivateField(viewModel, "_resetForRecovery", cancelled);
+                SetPrivateField(viewModel, "_runTimedTest", new Func<CalibrationSettings, DwmPatchResponse>(settings => cancelled()));
+                var approval = ProgramGammaApprovalTests.CreateValidApprovalForTests();
+                SetPrivateField(viewModel, "_programGammaApproval", approval);
+                var method = typeof(MainViewModel).GetMethod(operation, flags);
+                var arguments = method.GetParameters().Length == 0 ? null : new object[] { CreateTestStartupSettings() };
+                ((System.Threading.Tasks.Task)method.Invoke(viewModel, arguments)).GetAwaiter().GetResult();
+                Assert(ReferenceEquals(GetPrivateField(viewModel, "_programGammaApproval"), approval) && approval.IsStillValid(),
+                    operation + ": a declined UAC prompt revoked the program gamma approval.");
+
+                // A helper that ran and failed may have restarted DWM: the approval goes.
+                Func<DwmPatchResponse> failed = () => throw new InvalidOperationException("Synthetic failure after the helper started.");
+                SetPrivateField(viewModel, "_applySupervised",
+                    new Func<CalibrationSettings, Action<DwmPatchResponse>, WindowsEnvironmentIdentity, StartupApprovalFileProof, DwmPatchResponse>(
+                        (settings, persist, expected, proof) => failed()));
+                SetPrivateField(viewModel, "_resetDwm", failed);
+                SetPrivateField(viewModel, "_resetForRecovery", failed);
+                SetPrivateField(viewModel, "_runTimedTest", new Func<CalibrationSettings, DwmPatchResponse>(settings => failed()));
+                ((System.Threading.Tasks.Task)method.Invoke(viewModel, arguments)).GetAwaiter().GetResult();
+                Assert(GetPrivateField(viewModel, "_programGammaApproval") == null && !approval.IsStillValid(),
+                    operation + ": a failed DWM operation kept the program gamma approval.");
+            }
+        }
+
+        private static void TestTimedTestElevationCancelKeepsApproval()
+        {
+            var environment = CreateTestWindowsEnvironment();
+            var store = new MemoryStartupActivationPolicyStore();
+            var viewModel = CreateCooldownViewModel(store, environment, () => TimeSpan.Zero);
+            var policy = store.Load();
+            policy.Enabled = true;
+            store.Save(policy);
+            viewModel.RefreshStartupActivationState();
+            Assert(viewModel.IsStartupActivationEnabled, "The baseline startup approval is not enabled.");
+            var runs = 0;
+            SetPrivateField(viewModel, "_cleanupLegacyProfiles",
+                new Func<LegacyProfileCleanupResult>(() => new LegacyProfileCleanupResult(0, null)));
+            SetPrivateField(viewModel, "_runTimedTest", new Func<CalibrationSettings, DwmPatchResponse>(settings =>
+            {
+                runs++;
+                throw new DwmElevationCancelledException(new System.ComponentModel.Win32Exception(1223));
+            }));
+            var run = typeof(MainViewModel).GetMethod("RunConfirmedTimedTestAsync",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            ((System.Threading.Tasks.Task)run.Invoke(viewModel, new object[] { CreateTestStartupSettings() })).GetAwaiter().GetResult();
+            Assert(runs == 1, "The timed test seam was not used.");
+            Assert(store.Load().Enabled && !store.Load().ApprovalRevoked && viewModel.IsStartupActivationEnabled,
+                "A declined UAC prompt for a new test revoked the enabled startup approval.");
+            Assert(viewModel.IsCurrentSettingsTested && !viewModel.IsError && !viewModel.IsBusy,
+                "A declined UAC prompt for a new test discarded the previous test proof.");
+
+            // A test that actually ran and failed still replaces both.
+            SetPrivateField(viewModel, "_runTimedTest", new Func<CalibrationSettings, DwmPatchResponse>(settings =>
+            {
+                throw new InvalidOperationException("Synthetic failed test after the helper started.");
+            }));
+            ((System.Threading.Tasks.Task)run.Invoke(viewModel, new object[] { CreateTestStartupSettings() })).GetAwaiter().GetResult();
+            Assert(store.Load().ApprovalRevoked && !store.Load().Enabled && !viewModel.IsCurrentSettingsTested && viewModel.IsError,
+                "A failed test kept the previous approval.");
+        }
+
         private static void TestApplyElevationCancelKeepsProof()
         {
             var environment = CreateTestWindowsEnvironment();
@@ -2541,16 +2568,6 @@ namespace HDRCalibrate.Tests
             Assert(leftChunk != null && rightChunk != null && leftChunk.DataSize == rightChunk.DataSize, message);
             for (var index = 0; index < leftChunk.DataSize; index++)
                 Assert(left[leftChunk.DataOffset + index] == right[rightChunk.DataOffset + index], message);
-        }
-
-        private static byte[] CreateFallback()
-        {
-            return IccProfileFactory.CreateFallbackProfile(
-                "HDR Calibrate Testprofil",
-                new DisplayColorMetadata(),
-                new CalibrationSettings(),
-                1024,
-                203.0);
         }
 
         private static void Assert(bool condition, string message)

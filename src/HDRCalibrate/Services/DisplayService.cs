@@ -53,52 +53,6 @@ namespace HDRCalibrate.Services
             return displays.OrderByDescending(display => display.HdrActive).ThenBy(display => display.FriendlyName).ToArray();
         }
 
-        public static bool ValidateProfileFile(string path, out string error)
-        {
-            error = null;
-            if (!File.Exists(path))
-            {
-                error = "Die Profildatei existiert nicht.";
-                return false;
-            }
-
-            var pointer = Marshal.StringToHGlobalUni(path);
-            try
-            {
-                var descriptor = new ColorProfileDescriptor
-                {
-                    Type = 1,
-                    ProfileData = pointer,
-                    DataSize = checked((uint)((path.Length + 1) * 2))
-                };
-                var handle = NativeMethods.OpenColorProfile(ref descriptor, 1, 1, 3);
-                if (handle == IntPtr.Zero)
-                {
-                    error = new Win32Exception(Marshal.GetLastWin32Error()).Message;
-                    return false;
-                }
-
-                try
-                {
-                    if (!NativeMethods.IsColorProfileValid(handle, out var valid))
-                    {
-                        error = new Win32Exception(Marshal.GetLastWin32Error()).Message;
-                        return false;
-                    }
-                    if (!valid) error = "Windows stuft das ICC-Profil als ungültig ein.";
-                    return valid;
-                }
-                finally
-                {
-                    NativeMethods.CloseColorProfile(handle);
-                }
-            }
-            finally
-            {
-                Marshal.FreeHGlobal(pointer);
-            }
-        }
-
         public static string GetColorDirectory()
         {
             uint size = 0;

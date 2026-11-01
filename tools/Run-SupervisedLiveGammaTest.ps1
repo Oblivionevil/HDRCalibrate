@@ -377,8 +377,8 @@ $report = [ordered]@{
 try {
     $preflight = [HDRCalibrate.Dwm.DwmPatchEngine]::new().Preflight($settings)
     $report.Preflight = $preflight
-    if (-not $preflight.Success -or $preflight.PatchedShaderCount -ne 4 -or
-        $preflight.PatchedConstantVectorCount -ne 16 -or $preflight.ChangedByteCount -ge 512) {
+    if (-not $preflight.Success -or $preflight.PatchedShaderCount -ne 6 -or
+        $preflight.PatchedConstantVectorCount -ne 24 -or $preflight.ChangedByteCount -ge 512) {
         throw "Read-only-Preflight fehlgeschlagen: $($preflight.Message)"
     }
 

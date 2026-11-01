@@ -22,6 +22,15 @@ namespace HDRCalibrate.ViewModels
         private readonly DisplayService _displayService = new DisplayService();
         private readonly ProfileService _profileService = new ProfileService();
         private readonly DwmPatchService _dwmPatchService = new DwmPatchService();
+        // Seams for offline tests: the timed test needs UAC and restarts DWM, the
+        // legacy cleanup can change real color profiles.
+        private Func<CalibrationSettings, DwmPatchResponse> _runTimedTest;
+        private Func<LegacyProfileCleanupResult> _cleanupLegacyProfiles;
+        private Func<CalibrationSettings, DwmPatchResponse> _preflightFor;
+        private Func<CalibrationSettings, Action<DwmPatchResponse>, WindowsEnvironmentIdentity,
+            StartupApprovalFileProof, DwmPatchResponse> _applySupervised;
+        private Func<DwmPatchResponse> _resetDwm;
+        private Func<DwmPatchResponse> _resetForRecovery;
         private readonly DwmStateStore _dwmStateStore = new DwmStateStore();
         private readonly AutostartService _autostartService;
         private readonly IStartupActivationPolicyStore _startupActivationPolicyStore;
@@ -90,6 +99,12 @@ namespace HDRCalibrate.ViewModels
                 ?? new WindowsEnvironmentIdentityProvider();
             _restartCooldownRemainingProvider = restartCooldownRemainingProvider
                 ?? _dwmPatchService.GetRestartCooldownRemaining;
+            _runTimedTest = _dwmPatchService.RunTimedTest;
+            _cleanupLegacyProfiles = RestoreLegacyProfiles;
+            _preflightFor = _dwmPatchService.Preflight;
+            _applySupervised = _dwmPatchService.ApplySupervised;
+            _resetDwm = _dwmPatchService.Reset;
+            _resetForRecovery = _dwmPatchService.ResetForRecovery;
             RefreshCommand = new AsyncRelayCommand(RefreshAsync, () => !IsBusy);
             ApplyCommand = new AsyncRelayCommand(ApplyAsync, () => CanApply && !IsBusy);
             TestCommand = new AsyncRelayCommand(RunTimedTestAsync, () => CanTest && !IsBusy);
@@ -663,7 +678,7 @@ namespace HDRCalibrate.ViewModels
                         var approvedFingerprint = GetSettingsKey(approvedSettings);
                         try
                         {
-                            _preflight = await Task.Run(() => _dwmPatchService.Preflight(approvedSettings));
+                            _preflight = await Task.Run(() => _preflightFor(approvedSettings));
                         }
                         catch
                         {
@@ -726,9 +741,12 @@ namespace HDRCalibrate.ViewModels
                 try
                 {
                     var startupApproval = CaptureStartupApprovalFile(approvedPolicy);
-                    var restoredProfiles = await Task.Run(RestoreLegacyProfiles);
+                    var restoredProfiles = await Task.Run(_cleanupLegacyProfiles);
+                    // A logon shortly after a DWM restart (or a clock that is behind
+                    // the guard marker after a dual boot) must wait, not fail.
+                    await WaitForRestartGuardAsync();
                     PersistedDwmState committedState = null;
-                    var response = await Task.Run(() => _dwmPatchService.ApplySupervised(
+                    var response = await Task.Run(() => _applySupervised(
                         approvedSettings,
                         activation =>
                         {
@@ -752,6 +770,14 @@ namespace HDRCalibrate.ViewModels
                         true,
                         true,
                         StatusMessage);
+                }
+                catch (DwmRestartCooldownException ex)
+                {
+                    // Rejected before any helper started; never a reason to revoke.
+                    IsError = false;
+                    StatusMessage = "Startaktivierung übersprungen: " + ex.Message +
+                        " DWM wurde nicht verändert; die Startfreigabe bleibt erhalten.";
+                    return new StartupActivationResult(StartupActivationDecision.Ready, false, false, StatusMessage);
                 }
                 catch (DwmElevationCancelledException)
                 {
@@ -813,7 +839,7 @@ namespace HDRCalibrate.ViewModels
             try
             {
                 var displaysTask = Task.Run(() => _displayService.GetActiveDisplays());
-                var preflightTask = Task.Run(() => _dwmPatchService.Preflight(settings));
+                var preflightTask = Task.Run(() => _preflightFor(settings));
                 await Task.WhenAll(displaysTask, preflightTask);
 
                 var detected = displaysTask.Result;
@@ -825,8 +851,17 @@ namespace HDRCalibrate.ViewModels
                                ?? Displays.FirstOrDefault(item => item.HdrActive)
                                ?? Displays.FirstOrDefault();
 
+                // The legacy file is cleanup only; an unreadable one must not stop
+                // the DWM status and startup state from being refreshed.
+                string legacyStateWarning = null;
+                try { _hasLegacyRestorePoint = detected.Any(_profileService.HasLegacyProfile); }
+                catch (Exception legacyError)
+                {
+                    _hasLegacyRestorePoint = false;
+                    legacyStateWarning = " Warnung: Der alte Profil-Wiederherstellungszustand ist nicht lesbar (" +
+                        legacyError.Message + ").";
+                }
                 _dwmState = _dwmStateStore.Load();
-                _hasLegacyRestorePoint = detected.Any(display => _profileService.GetState(display) != null);
                 UpdateDwmStatus();
                 RefreshStartupActivationState();
 
@@ -846,9 +881,9 @@ namespace HDRCalibrate.ViewModels
                 }
                 else
                 {
-                    StatusMessage = detected.Count == 0
+                    StatusMessage = (detected.Count == 0
                         ? "Windows meldet keinen aktiven Monitor."
-                        : $"{detected.Count} aktiver Monitor erkannt; DWM-SDR-Pfad statisch verifiziert.";
+                        : $"{detected.Count} aktiver Monitor erkannt; DWM-SDR-Pfad statisch verifiziert.") + legacyStateWarning;
                 }
             }
             catch (Exception ex)
@@ -901,29 +936,36 @@ namespace HDRCalibrate.ViewModels
                 StatusMessage = RestartCooldownText;
                 return;
             }
+            await RunConfirmedApplyAsync(settings);
+        }
 
-            InvalidateProgramGammaApproval();
+        private async Task RunConfirmedApplyAsync(CalibrationSettings settings)
+        {
+            // The program approval stays until a helper actually ran: while busy it
+            // is not valid anyway, and a declined UAC prompt leaves DWM unchanged.
             IsBusy = true;
             IsError = false;
             StatusMessage = "Alte HDR-Calibrate-Profile werden zurückgenommen …";
             try
             {
-                var restoredProfiles = await Task.Run(RestoreLegacyProfiles);
+                var restoredProfiles = await Task.Run(_cleanupLegacyProfiles);
                 StatusMessage = settings.IsNeutral()
                     ? "DWM wird ungepatcht neu gestartet …"
                     : "Originalshader und 24 Konstanten werden geprüft; Administratorfreigabe wird benötigt …";
 
                 PersistedDwmState committedState = null;
                 var response = settings.IsNeutral()
-                    ? await Task.Run(() => _dwmPatchService.Reset())
-                    : await Task.Run(() => _dwmPatchService.ApplySupervised(
+                    ? await Task.Run(_resetDwm)
+                    : await Task.Run(() => _applySupervised(
                         settings,
                         activation =>
                         {
                             committedState = CreateAppliedState(activation, settings);
                             _dwmStateStore.Save(committedState);
                         },
-                        _lastTestedWindowsEnvironment));
+                        _lastTestedWindowsEnvironment,
+                        null));
+                InvalidateProgramGammaApproval();
 
                 if (settings.IsNeutral())
                 {
@@ -972,9 +1014,8 @@ namespace HDRCalibrate.ViewModels
             if (ex is DwmRestartCooldownException)
             {
                 // The service rejects before creating a request or starting a
-                // helper, so DWM was not touched and the successful test stays
-                // valid. Legacy profiles may already be restored and the program
-                // approval was revoked; the next successful Apply re-establishes it.
+                // helper, so DWM was not touched: the successful test and the
+                // program approval stay valid. Legacy profiles may already be restored.
                 RefreshRestartCooldown();
                 IsError = false;
                 StatusMessage = IsRestartCooldownActive ? RestartCooldownText
@@ -1006,19 +1047,23 @@ namespace HDRCalibrate.ViewModels
                 MessageBoxImage.Warning,
                 MessageBoxResult.No);
             if (confirmation != MessageBoxResult.Yes) return;
+            await RunConfirmedResetAsync();
+        }
 
-            InvalidateProgramGammaApproval();
+        private async Task RunConfirmedResetAsync()
+        {
             IsBusy = true;
             IsError = false;
             StatusMessage = "DWM wird zuerst ungepatcht neu gestartet …";
             try
             {
-                var response = await Task.Run(() => _dwmPatchService.ResetForRecovery());
+                var response = await Task.Run(_resetForRecovery);
+                InvalidateProgramGammaApproval();
                 _dwmStateStore.Clear();
                 _dwmState = null;
                 ClearStartupActivationPolicy();
                 StatusMessage = "DWM läuft ungepatcht; alte Profilreste werden bereinigt …";
-                var restoredProfiles = await Task.Run(RestoreLegacyProfiles);
+                var restoredProfiles = await Task.Run(_cleanupLegacyProfiles);
                 SetNeutralValues();
                 await RefreshAsync();
                 StatusMessage = "Notfall-Reset abgeschlossen: DWM läuft ungepatcht in PID " +
@@ -1026,11 +1071,15 @@ namespace HDRCalibrate.ViewModels
             }
             catch (Exception ex)
             {
+                // A declined UAC prompt started no helper; any other failure may
+                // already have restarted DWM.
+                if (!(ex is DwmElevationCancelledException)) InvalidateProgramGammaApproval();
                 SetError("Zurücksetzen fehlgeschlagen: " + FlattenException(ex));
             }
             finally
             {
                 IsBusy = false;
+                RefreshRestartCooldown();
                 RaiseDisplayProperties();
             }
         }
@@ -1076,26 +1125,31 @@ namespace HDRCalibrate.ViewModels
                 StatusMessage = RestartCooldownText;
                 return;
             }
+            await RunConfirmedTimedTestAsync(settings);
+        }
 
+        private async Task RunConfirmedTimedTestAsync(CalibrationSettings settings)
+        {
             IsBusy = true;
             IsError = false;
-            InvalidateSessionTest();
-            RevokeStartupApproval("Ein neuer Test ersetzt den bisherigen Nachweis. Bis zum erfolgreichen Abschluss bleibt die Startaktivierung widerrufen.");
-            OnPropertyChanged(nameof(IsCurrentSettingsTested));
+            // The previous test proof, the startup approval and the program approval
+            // (not valid while busy anyway) are only replaced once a helper actually
+            // ran: a declined UAC prompt must not cost them.
             StatusMessage = "Alte HDR-Calibrate-Profile werden zurückgenommen …";
             try
             {
                 var testedWindowsEnvironment = await Task.Run(() => _windowsEnvironmentIdentityProvider.Capture());
-                var restoredProfiles = await Task.Run(RestoreLegacyProfiles);
+                var restoredProfiles = await Task.Run(_cleanupLegacyProfiles);
                 StatusMessage = "5-Sekunden-Test läuft; unabhängiger Watchdog ist vor dem Patch bereits aktiv …";
-                var response = await Task.Run(() => _dwmPatchService.RunTimedTest(settings));
+                var response = await Task.Run(() => _runTimedTest(settings));
+                InvalidateSessionTest();
                 if (!testedWindowsEnvironment.Matches(await Task.Run(() => _windowsEnvironmentIdentityProvider.Capture())))
                     throw new InvalidDataException("Windows oder DWM wurde während des Tests geändert. Der Test wird nicht freigegeben.");
 
                 string startupPolicyWarning = null;
                 try
                 {
-                    _startupActivationPolicy = StartupActivationPolicy.CreateFromSuccessfulTest(
+                    var created = StartupActivationPolicy.CreateFromSuccessfulTest(
                         settings,
                         response,
                         GetAppVersion(),
@@ -1103,12 +1157,15 @@ namespace HDRCalibrate.ViewModels
                         false,
                         testedWindowsEnvironment,
                         _windowsEnvironmentIdentityProvider);
-                    _startupActivationPolicyStore.Save(_startupActivationPolicy);
+                    _startupActivationPolicyStore.Save(created);
+                    _startupActivationPolicy = created;
                     _startupPolicyError = null;
                     _startupApprovalInvalidated = false;
                 }
                 catch (Exception policyError)
                 {
+                    // The new test replaces the previous approval; it must not survive.
+                    RevokeStartupApproval("Ein neuer Test ersetzt den bisherigen Nachweis.");
                     _startupActivationPolicy = null;
                     _startupPolicyError = policyError.Message;
                     startupPolicyWarning = " Startaktivierung bleibt gesperrt: " + policyError.Message;
@@ -1127,8 +1184,29 @@ namespace HDRCalibrate.ViewModels
                     FormatLegacyRestore(restoredProfiles) + "." + startupPolicyWarning;
                 RefreshStartupActivationState();
             }
+            catch (Exception ex) when (ex is DwmElevationCancelledException || ex is DwmRestartCooldownException)
+            {
+                // Rejected before any helper started: DWM, the previous test and the
+                // startup approval are exactly as before.
+                IsError = false;
+                StatusMessage = (ex is DwmElevationCancelledException
+                        ? "Administratorabfrage abgebrochen; DWM wurde nicht verändert."
+                        : ex.Message) +
+                    " Der bisherige Testnachweis und die Startfreigabe bleiben unverändert.";
+            }
             catch (Exception ex)
             {
+                // The helper may have restarted DWM (the watchdog resets it
+                // unpatched), so an earlier applied state may no longer be live.
+                try
+                {
+                    _dwmState = _dwmStateStore.Load();
+                    UpdateDwmStatus();
+                }
+                catch
+                {
+                    _dwmState = null;
+                }
                 RevokeStartupApproval("Der Test wurde nicht sicher bestätigt. Neuer Test und erneute Freigabe erforderlich.");
                 SetError("5-Sekunden-Test fehlgeschlagen: " + FlattenException(ex));
             }
@@ -1140,11 +1218,23 @@ namespace HDRCalibrate.ViewModels
             }
         }
 
+        private async Task WaitForRestartGuardAsync()
+        {
+            TimeSpan remaining;
+            try { remaining = _restartCooldownRemainingProvider(); }
+            catch (Exception) { return; } // The service enforces an unreadable guard itself.
+            if (remaining <= TimeSpan.Zero) return;
+            if (remaining > DwmRestartCooldown.Duration) remaining = DwmRestartCooldown.Duration;
+            StatusMessage = "Startaktivierung wartet die DWM-Neustartsperre ab (" +
+                Math.Ceiling(remaining.TotalSeconds).ToString("0", CultureInfo.CurrentCulture) + " s) …";
+            await Task.Delay(remaining + TimeSpan.FromMilliseconds(100));
+        }
+
         private LegacyProfileCleanupResult RestoreLegacyProfiles()
         {
             return LegacyProfileCleanup.Run(
                 _displayService.GetActiveDisplays,
-                display => _profileService.GetState(display) != null,
+                _profileService.HasLegacyProfile,
                 _profileService.Reset);
         }
 

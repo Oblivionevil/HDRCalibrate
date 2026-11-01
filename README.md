@@ -1,9 +1,50 @@
-# HDR Calibrate 1.7.4
+# HDR Calibrate 1.7.5
 
 Portables WPF-Tool für Windows 11 und .NET Framework 4.8.1. Es passt bei
 aktiviertem Windows-HDR ausschließlich die von DWM zusammengesetzten
 SDR-Flächen an. Anwendungen werden nicht gehookt und Windows-Dateien werden
 nicht verändert.
+
+**Neu in 1.7.5 (Fehlerbehebungen):** Eine beim 5-Sekunden-Test abgelehnte
+UAC-Abfrage lässt den bisherigen Testnachweis und die Startfreigabe unverändert;
+ersetzt werden sie erst, wenn der Test tatsächlich gelaufen ist. Ebenso behalten
+Test, Anwenden und Notfall-Reset bei abgelehnter UAC-Abfrage die Gamma-Freigabe
+für Programme. Der erhöhte
+Helfer akzeptiert sein eigenes Anfrageverzeichnis wieder in jeder Form (auch bei
+umgeleitetem `%LOCALAPPDATA%`). Bleibt nach einem Zeitlimit ein Helfer aktiv,
+gilt die 10-Sekunden-Neustartsperre, solange er läuft, und danach weitere zehn
+Sekunden; das gilt auch, wenn der 5-Sekunden-Test-Supervisor nach dem Zeitlimit
+beendet wurde, und gezählt wird ab dem bemerkten Ende. Die Startaktivierung
+wartet eine laufende Neustartsperre ab und widerruft die Startfreigabe deswegen
+nie. Ein gespeicherter DWM-Zustand ohne Startzeit gilt nie als aktiv, und
+die Zustandsdatei wird gehärtet gelesen. Die Deinstallation zählt eigene
+Sicherungsordner nicht mehr als fremde Dateien. Der native Gamma-Hook (nur
+26100.8875) gibt eine Sitzung frei, deren Controller ohne Stop beendet wurde;
+deshalb liegt er in `Native\1.7.5`.
+
+Außerdem in 1.7.5: Scheitert der Test-Supervisor vor der bestätigten
+Rücksetzung, setzt er DWM selbst zurück oder lässt den unabhängigen Watchdog
+weiterlaufen, statt ihn zu beenden; die App hält die Neustartsperre dann, bis
+kein Helfer mehr läuft. Kann der Zeitstempel der Sperre nicht geschrieben
+werden, bleibt sie bestehen; das gilt auch nach einem regulär beendeten Helfer.
+Nach einem Notfall-Reset zeigt die Oberfläche die laufende Schutzpause sofort.
+Nach einem Reset auf neutrale Werte sind Test und Anwenden für ein neu
+gewähltes Gamma ohne erneute Erkennung verfügbar, und der DWM-Status zeigt
+nicht mehr „nicht kompatibel“. Die automatische Bereinigung alter
+HDR-Calibrate-Profile (1.0) findet ihren Wiederherstellungspunkt auch nach
+einem Neustart, behält ein inzwischen selbst gewähltes Farbprofil, entfernt
+nur die eigene Zuordnung und meldet ein noch aktives eigenes Profil ohne
+Wiederherstellungspunkt als Warnung. Ein unlesbarer alter Profilzustand
+blockiert die Erkennung nicht mehr. Der nicht mehr verwendete Code zum
+Erzeugen von MHC2-Profilen wurde entfernt. Das Setup schreibt nie über eine Junction
+unterhalb des Installationsordners, bewahrt die Sicherung einer unvollständigen
+Rücknahme bis zur nächsten erfolgreichen Installation und entfernt bei der
+Deinstallation den registrierten Uninstaller zuletzt.
+
+**Gamma für einzelne Programme ist in 1.7.x auf keinem Windows-Build nutzbar.**
+Es setzt eine aktive globale Korrektur voraus; der native Hook ist nur für
+26100.8875 geprüft, die globale Korrektur nur für 26100.9278 und 26100.9949.
+Die Programmliste zeigt das an und sperrt Test und Erzwingen.
 
 **Neu in 1.7.4:** Die globale SDR-Korrektur unterstützt zusätzlich das
 Windows-Update vom Oktober 2026 (`dwmcore.dll`, von Windows als 10.0.26100.9949

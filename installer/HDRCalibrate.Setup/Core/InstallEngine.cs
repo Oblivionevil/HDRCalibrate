@@ -115,6 +115,8 @@ namespace HDRCalibrate.Setup.Core
                     new InstallationRecord(ownsDirectory, files).WriteTo(recordFile);
                     transaction.Put(recordFile, ProductInfo.RecordFileName);
                     transaction.Commit();
+                    // Every file is now this version's; earlier unfinished backups are superseded.
+                    FileTransaction.DeleteStaleBackups(directory, log, true);
                 }
                 catch (Exception ex) when (!(ex is SetupException))
                 {

@@ -1,6 +1,7 @@
 using HDRCalibrate.Core;
 using System;
 using System.IO;
+using System.Xml;
 using System.Xml.Serialization;
 
 namespace HDRCalibrate.Services
@@ -38,12 +39,23 @@ namespace HDRCalibrate.Services
             if (!File.Exists(_statePath)) return null;
             try
             {
+                if (new FileInfo(_statePath).Length > 64 * 1024)
+                    throw new InvalidDataException("Der gespeicherte DWM-Zustand besitzt eine ungültige Größe.");
                 using (var stream = new FileStream(_statePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                using (var reader = XmlReader.Create(stream, new XmlReaderSettings
                 {
-                    return (PersistedDwmState)_serializer.Deserialize(stream);
+                    DtdProcessing = DtdProcessing.Prohibit,
+                    XmlResolver = null
+                }))
+                {
+                    return (PersistedDwmState)_serializer.Deserialize(reader);
                 }
             }
             catch (InvalidOperationException ex)
+            {
+                throw new InvalidDataException("Der gespeicherte DWM-Zustand ist beschädigt.", ex);
+            }
+            catch (XmlException ex)
             {
                 throw new InvalidDataException("Der gespeicherte DWM-Zustand ist beschädigt.", ex);
             }
@@ -72,9 +84,8 @@ namespace HDRCalibrate.Services
 
         public void Clear()
         {
-            if (File.Exists(_statePath)) File.Delete(_statePath);
-            var temporary = _statePath + ".tmp";
-            if (File.Exists(temporary)) File.Delete(temporary);
+            foreach (var path in new[] { _statePath, _statePath + ".tmp", _statePath + ".bak" })
+                if (File.Exists(path)) File.Delete(path);
         }
     }
 }

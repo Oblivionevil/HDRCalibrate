@@ -747,6 +747,28 @@ int main() {
     SelectiveDwmStop(nullptr);
     Check("inflight-callback-count-balanced", InterlockedCompareExchange(&g_inflightCallbacks, 0, 0) == 0);
 
+    // A crashed controller must not block every later start until DWM restarts,
+    // but a live controller's session is never taken over.
+    {
+        SharedState liveShared{}, deadShared{};
+        Session live{}, dead{};
+        live.shared = &liveShared;
+        live.controller = GetCurrentProcess();
+        InterlockedExchangePointer(&g_current, &live);
+        Check("live-controller-session-is-not-retired",
+            RetireAbandonedSession() == ERROR_ALREADY_EXISTS && CurrentSession() == &live && live.stopped == 0);
+        const HANDLE exited = CreateEventW(nullptr, TRUE, TRUE, nullptr);
+        dead.shared = &deadShared;
+        dead.controller = exited;
+        deadShared.telemetry.lifecycle = Lifecycle::Observing;
+        InterlockedExchangePointer(&g_current, &dead);
+        Check("exited-controller-session-is-retired",
+            exited && RetireAbandonedSession() == ERROR_SUCCESS && CurrentSession() == nullptr &&
+            dead.stopped == 1 && deadShared.telemetry.lifecycle == Lifecycle::StoppedPinned);
+        Check("retire-without-session-is-a-no-op", RetireAbandonedSession() == ERROR_SUCCESS);
+        if (exited) CloseHandle(exited);
+    }
+
     // Stopped sessions no longer exhaust the per-DWM session table, but are
     // freed only at a moment without any detour that could still hold them.
     auto* staleSession = static_cast<Session*>(HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(Session)));

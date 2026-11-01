@@ -16,7 +16,7 @@ namespace HDRCalibrate.Tests
     /// </summary>
     internal static class SetupTests
     {
-        private const string Version = "1.7.4";
+        private const string Version = "1.7.5";
 
         internal sealed class MemoryRegistry : ISetupRegistry
         {
@@ -461,6 +461,9 @@ namespace HDRCalibrate.Tests
                 new InstallEngine(sandbox.Context).Install(package, sandbox.SetupExecutable,
                     new InstallOptions { DesktopShortcut = true, Autostart = true });
                 var locked = Path.Combine(sandbox.Install, "HDRCalibrate.Dwm.dll");
+                // A leftover update backup that cannot be cleaned yet is Setup's own.
+                var backup = Path.Combine(sandbox.Install, ProductInfo.BackupDirectoryPrefix + new string('a', 32));
+                Directory.CreateDirectory(Path.Combine(backup, "nested"));
                 UninstallResult first;
                 // Without delete sharing the owned file cannot be removed.
                 using (new FileStream(locked, FileMode.Open, FileAccess.Read, FileShare.Read))
@@ -478,9 +481,31 @@ namespace HDRCalibrate.Tests
                     && sandbox.Registry.GetString(ProductInfo.RunKey, ProductInfo.RunValueName) == null,
                     "The incomplete uninstall did not remove the removable state.");
 
+                Directory.Delete(backup, true);
                 var second = new UninstallEngine(sandbox.Context).Uninstall(package.Manifest);
                 Check(second.IsComplete && !Directory.Exists(sandbox.Install)
                     && !sandbox.Registry.KeyExists(ProductInfo.UninstallKey),
+                    "Repeating the uninstall did not complete it.");
+            }
+        }
+
+        public static void UninstallKeepsItsUninstallerWhileTheRecordIsLocked()
+        {
+            using (var sandbox = new Sandbox())
+            {
+                var package = Package(PackageFiles());
+                new InstallEngine(sandbox.Context).Install(package, sandbox.SetupExecutable, new InstallOptions());
+                var record = Path.Combine(sandbox.Install, ProductInfo.RecordFileName);
+                UninstallResult first;
+                using (new FileStream(record, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    first = new UninstallEngine(sandbox.Context).Uninstall(package.Manifest);
+                Check(!first.IsComplete && first.FailedFiles.SequenceEqual(new[] { ProductInfo.RecordFileName }),
+                    "A locked installation record was not reported.");
+                Check(sandbox.Registry.KeyExists(ProductInfo.UninstallKey)
+                    && File.Exists(Path.Combine(sandbox.Install, ProductInfo.SetupExeName)),
+                    "The kept Apps entry points to a deleted uninstaller.");
+                var second = new UninstallEngine(sandbox.Context).Uninstall(package.Manifest);
+                Check(second.IsComplete && !sandbox.Registry.KeyExists(ProductInfo.UninstallKey),
                     "Repeating the uninstall did not complete it.");
             }
         }

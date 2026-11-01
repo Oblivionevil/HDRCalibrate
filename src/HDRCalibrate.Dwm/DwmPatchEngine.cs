@@ -37,6 +37,25 @@ namespace HDRCalibrate.Dwm
                 if (!compatibility.IsCompatible)
                     throw new NotSupportedException(compatibility.Reason);
 
+                if (settings.IsNeutral())
+                {
+                    // Neutral values are applied by an unpatched DWM restart. The
+                    // system stays verified (full shader manifest), so a later
+                    // non-neutral value can be tested without a new detection.
+                    DwmCoreInspector.ValidateShaderManifest(File.ReadAllBytes(compatibility.DwmCorePath));
+                    diagnostics.Add("Neutrale Werte: kein Schreibplan; das SDR-Shadermanifest ist unverändert gültig.");
+                    return new DwmPatchResponse
+                    {
+                        Success = true,
+                        LivePatchBlocked = !DwmPatchSafety.LivePatchEnabled,
+                        TimedTestAvailable = DwmPatchSafety.TimedTestEnabled,
+                        Message = "DWM-SDR-Shaderprüfung erfolgreich; neutrale Werte benötigen keinen Patch.",
+                        DwmCoreVersion = compatibility.DwmCoreVersion,
+                        PatchPlanFingerprint = string.Empty,
+                        Diagnostics = diagnostics
+                    };
+                }
+
                 DwmShaderRewriter.ValidateSupportedSettings(settings);
                 diagnostics.Add("ABI-erhaltender Konstantenpatch: Originalshader bleiben vollständig erhalten; nur 24 freigegebene SHDR-Konstanten werden geändert.");
                 var diskImage = File.ReadAllBytes(compatibility.DwmCorePath);

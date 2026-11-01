@@ -635,6 +635,21 @@ void DestroyUnpublishedSession(Session* session) noexcept {
     HeapFree(GetProcessHeap(), 0, session);
 }
 
+// Runs only under g_startLock. A controller that ended without Stop (crash or
+// kill) leaves its session published; its callbacks already pass through as
+// ControllerExited. Retire exactly that case so a new controller can start;
+// a session whose controller is alive (or not provably gone) stays.
+DWORD RetireAbandonedSession() noexcept {
+    auto* current = CurrentSession();
+    if (!current) return ERROR_SUCCESS;
+    if (!current->controller || WaitForSingleObject(current->controller, 0) != WAIT_OBJECT_0)
+        return ERROR_ALREADY_EXISTS;
+    InterlockedExchange(&current->stopped, 1);
+    InterlockedExchangePointer(&g_current, nullptr);
+    SetLifecycle(current, Lifecycle::StoppedPinned);
+    return ERROR_SUCCESS;
+}
+
 // Runs only under g_startLock while no session is published. Stopped sessions
 // were unpublished before; once g_inflightCallbacks is observed at zero no
 // detour can still hold them, and later callbacks cannot load them again.
@@ -665,7 +680,7 @@ DWORD Start(const StartConfig& config) noexcept {
     constexpr wchar_t prefix[] = L"Local\\HDRCalibrate.SelectiveDwm.";
     if (config.mappingName[kMappingNameCharacters - 1] ||
         wcsncmp(name, prefix, (sizeof(prefix) / sizeof(prefix[0])) - 1) != 0) return ERROR_INVALID_NAME;
-    if (CurrentSession()) return ERROR_ALREADY_EXISTS;
+    if (const auto busy = RetireAbandonedSession()) return busy;
     ReclaimStoppedSessions();
     if (g_sessionCount >= kMaximumSessions) return ERROR_TOO_MANY_SESS;
     auto* session = static_cast<Session*>(HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(Session)));

@@ -30,6 +30,11 @@ namespace HDRCalibrate.Services
         private const int TimedTestHelperTimeoutMilliseconds = 30000;
         private const int SupervisedApplyHelperTimeoutMilliseconds = 90000;
         private readonly DwmRestartCooldown _restartCooldown;
+        private readonly Func<bool> _isAnyHelperRunning;
+        // Set when the app stopped waiting for a started helper (its watchdog may
+        // still restart DWM later) or could not record a helper's end. The guard
+        // then holds in memory until no helper runs and the end is recorded.
+        private int _helperAbandoned;
         private readonly XmlSerializer _requestSerializer = new XmlSerializer(typeof(DwmPatchRequest));
         private readonly XmlSerializer _responseSerializer = new XmlSerializer(typeof(DwmPatchResponse));
 
@@ -37,14 +42,73 @@ namespace HDRCalibrate.Services
         {
         }
 
-        public DwmPatchService(DwmRestartCooldown restartCooldown)
+        public DwmPatchService(DwmRestartCooldown restartCooldown, Func<bool> isAnyHelperRunning = null)
         {
             _restartCooldown = restartCooldown ?? new DwmRestartCooldown();
+            _isAnyHelperRunning = isAnyHelperRunning ?? IsAnyHelperRunning;
         }
 
         public TimeSpan GetRestartCooldownRemaining()
         {
-            return _restartCooldown.GetRemaining();
+            var held = HoldWhileAbandonedHelperRuns();
+            var remaining = _restartCooldown.GetRemaining();
+            return held > remaining ? held : remaining;
+        }
+
+        /// <summary>
+        /// True when a started helper (or a watchdog it started) may still restart
+        /// DWM: it is still running, it timed out (even if it was killed since), or
+        /// its outcome was not finalized.
+        /// </summary>
+        internal static bool HelperMayStillRun(bool started, bool completed, bool timedOut, bool outcomeFinalized)
+        {
+            return started && (!completed || timedOut || !outcomeFinalized);
+        }
+
+        private void MarkHelperAbandoned()
+        {
+            Volatile.Write(ref _helperAbandoned, 1);
+            TryMarkObservedRestart();
+        }
+
+        private void RecordHelperEnd()
+        {
+            // The request marker may already be older than the guard (UAC wait,
+            // helper run time), so an unwritten end must not lift the guard.
+            if (!TryMarkObservedRestart()) Volatile.Write(ref _helperAbandoned, 1);
+        }
+
+        /// <returns>
+        /// The full guard while an abandoned helper may still restart DWM, held in
+        /// memory as well: a marker write that fails must never lift the guard.
+        /// </returns>
+        private TimeSpan HoldWhileAbandonedHelperRuns()
+        {
+            if (Volatile.Read(ref _helperAbandoned) == 0) return TimeSpan.Zero;
+            if (_isAnyHelperRunning())
+            {
+                TryMarkObservedRestart();
+                return DwmRestartCooldown.Duration;
+            }
+            // Its exit time is unknown (polling stops while the window is hidden),
+            // so the guard counts from the moment the exit is noticed, and only
+            // once that moment is recorded.
+            if (!TryMarkObservedRestart()) return DwmRestartCooldown.Duration;
+            Volatile.Write(ref _helperAbandoned, 0);
+            return TimeSpan.Zero;
+        }
+
+        private void EnforceAbandonedHelperHold()
+        {
+            var held = HoldWhileAbandonedHelperRuns();
+            if (held > TimeSpan.Zero) throw new DwmRestartCooldownException(held);
+        }
+
+        private static bool IsAnyHelperRunning()
+        {
+            var processes = Process.GetProcessesByName("HDRCalibrate.DwmHelper");
+            try { return processes.Length != 0; }
+            finally { foreach (var process in processes) process.Dispose(); }
         }
 
         public DwmPatchResponse Preflight(CalibrationSettings settings)
@@ -130,7 +194,8 @@ namespace HDRCalibrate.Services
             if (state == null || !state.WasApplied || state.DwmProcessId <= 0) return false;
             if (state.SessionId != Process.GetCurrentProcess().SessionId) return false;
             if (GetCurrentSessionDwmProcessId() != state.DwmProcessId) return false;
-            if (state.DwmStartTimeUtcTicks == 0) return true;
+            // Without a start time a reused PID would look like the patched DWM.
+            if (state.DwmStartTimeUtcTicks <= 0) return false;
             var currentStart = TryGetProcessStartTimeUtcTicks(state.DwmProcessId);
             return currentStart != 0 && currentStart == state.DwmStartTimeUtcTicks;
         }
@@ -145,12 +210,19 @@ namespace HDRCalibrate.Services
             Directory.CreateDirectory(requestRoot);
             long? restartMark = null;
             if (command != DwmPatchCommand.SafetyReset && command != DwmPatchCommand.Preflight)
+            {
+                EnforceAbandonedHelperHold();
                 restartMark = _restartCooldown.EnforceAndMark();
+            }
             var token = Guid.NewGuid().ToString("N");
             var requestPath = Path.Combine(requestRoot, "request-" + token + ".xml");
             var responsePath = Path.Combine(requestRoot, "response-" + token + ".xml");
             var helperStarted = false;
             var helperCompleted = false;
+            var helperTimedOut = false;
+            // A test supervisor that failed before a confirmed reset may have left
+            // its independent watchdog running; it can still restart DWM.
+            var outcomeFinalized = command != DwmPatchCommand.TimedTest;
 
             try
             {
@@ -202,6 +274,7 @@ namespace HDRCalibrate.Services
                     helperCompleted = helper.WaitForExit(timeout);
                     if (!helperCompleted)
                     {
+                        helperTimedOut = true;
                         if (command == DwmPatchCommand.TimedTest)
                         {
                             try
@@ -235,6 +308,7 @@ namespace HDRCalibrate.Services
                 }))
                     response = (DwmPatchResponse)_responseSerializer.Deserialize(reader);
                 if (response == null) throw new InvalidDataException("Die Antwort des DWM-Helfers ist leer.");
+                if (response.Success || response.WatchdogResetUtcTicks > 0) outcomeFinalized = true;
                 if (!response.Success)
                 {
                     var diagnostic = response.Diagnostics == null
@@ -247,7 +321,10 @@ namespace HDRCalibrate.Services
             }
             finally
             {
-                if (helperStarted) TryMarkObservedRestart();
+                // Killing a timed-out test supervisor ends only that process; its
+                // independent watchdog may still restart DWM afterwards.
+                if (HelperMayStillRun(helperStarted, helperCompleted, helperTimedOut, outcomeFinalized)) MarkHelperAbandoned();
+                else if (helperStarted) RecordHelperEnd();
                 // On timeout the elevated helper may still need both files. Leave them in place.
                 if (!helperStarted || helperCompleted)
                 {
@@ -270,6 +347,7 @@ namespace HDRCalibrate.Services
 
             var requestRoot = DwmIpcRoot.GetDefault();
             Directory.CreateDirectory(requestRoot);
+            EnforceAbandonedHelperHold();
             var restartMark = _restartCooldown.EnforceAndMark();
 
             var token = Guid.NewGuid().ToString("N");
@@ -399,7 +477,9 @@ namespace HDRCalibrate.Services
             }
             finally
             {
-                if (helperStarted) TryMarkObservedRestart();
+                // A supervisor that exited may still have left recovery to its watchdog.
+                if (HelperMayStillRun(helperStarted, helperCompleted, false, outcomeFinalized)) MarkHelperAbandoned();
+                else if (helperStarted) RecordHelperEnd();
                 // The supervisor can exit after handing recovery to an independent
                 // watchdog. Its exit alone does not make the shared IPC files disposable.
                 if (!helperStarted || outcomeFinalized)
@@ -470,15 +550,20 @@ namespace HDRCalibrate.Services
             return "\"" + value.Replace("\"", "\\\"") + "\"";
         }
 
-        private void TryMarkObservedRestart()
+        private bool TryMarkObservedRestart()
         {
             // A started helper can restart DWM more than once (a timed test patches
             // and then resets). Count the guard from its end. If this write fails,
             // the earlier request marker still guards (fail closed).
-            try { _restartCooldown.MarkRestart(); }
+            try
+            {
+                _restartCooldown.MarkRestart();
+                return true;
+            }
             catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is InvalidDataException)
             {
                 Trace.TraceWarning("DWM-Neustartsperre nach Helferende nicht aktualisiert: " + ex.Message);
+                return false;
             }
         }
 

@@ -170,14 +170,6 @@ namespace HDRCalibrate.Native
         MicrosoftHardwareColorV2 = 2
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    internal struct ColorProfileDescriptor
-    {
-        public uint Type;
-        public IntPtr ProfileData;
-        public uint DataSize;
-    }
-
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     internal struct DxgiOutputDescription1
     {
@@ -296,26 +288,7 @@ namespace HDRCalibrate.Native
 
         [DllImport("mscms.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
-        internal static extern bool InstallColorProfile(string machineName, string profilePath);
-
-        [DllImport("mscms.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
         internal static extern bool UninstallColorProfile(string machineName, string profileName, [MarshalAs(UnmanagedType.Bool)] bool delete);
-
-        [DllImport("mscms.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        internal static extern IntPtr OpenColorProfile(
-            ref ColorProfileDescriptor profile,
-            uint desiredAccess,
-            uint shareMode,
-            uint creationMode);
-
-        [DllImport("mscms.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        internal static extern bool IsColorProfileValid(IntPtr profile, [MarshalAs(UnmanagedType.Bool)] out bool valid);
-
-        [DllImport("mscms.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        internal static extern bool CloseColorProfile(IntPtr profile);
 
         [DllImport("kernel32.dll")]
         internal static extern IntPtr LocalFree(IntPtr memory);

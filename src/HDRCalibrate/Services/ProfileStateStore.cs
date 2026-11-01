@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Xml;
 using System.Xml.Serialization;
 
 namespace HDRCalibrate.Services
@@ -45,12 +46,23 @@ namespace HDRCalibrate.Services
             if (!File.Exists(_statePath)) return new PersistedAppState();
             try
             {
+                if (new FileInfo(_statePath).Length > 256 * 1024)
+                    throw new InvalidDataException("Der gespeicherte Wiederherstellungszustand besitzt eine ungültige Größe.");
                 using (var stream = new FileStream(_statePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                using (var reader = XmlReader.Create(stream, new XmlReaderSettings
                 {
-                    return (PersistedAppState)_serializer.Deserialize(stream) ?? new PersistedAppState();
+                    DtdProcessing = DtdProcessing.Prohibit,
+                    XmlResolver = null
+                }))
+                {
+                    return (PersistedAppState)_serializer.Deserialize(reader) ?? new PersistedAppState();
                 }
             }
             catch (InvalidOperationException ex)
+            {
+                throw new InvalidDataException("Der gespeicherte Wiederherstellungszustand ist beschädigt.", ex);
+            }
+            catch (XmlException ex)
             {
                 throw new InvalidDataException("Der gespeicherte Wiederherstellungszustand ist beschädigt.", ex);
             }

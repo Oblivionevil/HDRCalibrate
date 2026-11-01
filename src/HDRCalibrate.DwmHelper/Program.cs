@@ -152,6 +152,7 @@ namespace HDRCalibrate.DwmHelper
             DwmPatchResponse reset = null;
             Exception testFailure = null;
             long activationObservedAtMilliseconds = -1;
+            var watchdogArmed = false;
 
             try
             {
@@ -192,6 +193,8 @@ namespace HDRCalibrate.DwmHelper
                     WatchdogArmed = true,
                     Message = "Startsignal für den überwachten Test."
                 });
+                // From here the worker may patch DWM; only a confirmed reset ends the watchdog.
+                watchdogArmed = true;
                 supervisorClock.Start();
 
                 var fallbackDeadline = TimedDwmTestRunner.SetupDeadlineMilliseconds
@@ -289,13 +292,46 @@ namespace HDRCalibrate.DwmHelper
 
                 return TimedDwmTestRunner.Combine(applied, reset, measured);
             }
+            catch (Exception supervisorFailure) when (watchdogArmed && reset == null)
+            {
+                try
+                {
+                    reset = RecoverOrTakeOver(
+                        token, paths, workerIdentity, watchdog, watchdogIdentity,
+                        "Der Test-Supervisor ist vor der bestätigten Rücksetzung fehlgeschlagen.");
+                }
+                catch (Exception recoveryFailure)
+                {
+                    // Keep the independent watchdog and its IPC files: it is the
+                    // remaining authority that can still reset a patched DWM.
+                    throw new AggregateException(
+                        "Der Test-Supervisor ist fehlgeschlagen; der unabhängige Watchdog bleibt für die Rücksetzung aktiv.",
+                        supervisorFailure,
+                        recoveryFailure);
+                }
+                return new DwmPatchResponse
+                {
+                    Success = false,
+                    WatchdogArmed = true,
+                    WatchdogResetUtcTicks = reset.WatchdogResetUtcTicks,
+                    DwmProcessId = reset.DwmProcessId,
+                    DwmStartTimeUtcTicks = reset.DwmStartTimeUtcTicks,
+                    DwmCoreVersion = reset.DwmCoreVersion,
+                    Message = "Der Test wurde sicher zurückgesetzt, der Supervisor schlug jedoch fehl: " + supervisorFailure.Message,
+                    Diagnostics = reset.Diagnostics ?? new List<string>()
+                };
+            }
             finally
             {
+                // A dead worker makes the watchdog reset at once; the watchdog itself
+                // and its files go only before arming or after a confirmed reset.
                 TryTerminateExact(workerIdentity);
-                TryTerminateExact(watchdogIdentity);
+                var watchdogDone = !watchdogArmed || reset != null;
+                if (watchdogDone) TryTerminateExact(watchdogIdentity);
                 if (worker != null) worker.Dispose();
                 if (watchdog != null) watchdog.Dispose();
-                foreach (var path in paths.All) TryDelete(path);
+                if (watchdogDone)
+                    foreach (var path in paths.All) TryDelete(path);
             }
         }
 

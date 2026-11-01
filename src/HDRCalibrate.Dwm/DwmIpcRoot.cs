@@ -27,6 +27,9 @@ namespace HDRCalibrate.Dwm
 
         public static string Validate(string root)
         {
+            // Same-account elevation passes this process's own directory, which is
+            // valid in any form Windows uses for %LOCALAPPDATA% (also redirected).
+            if (IsOwnDefault(root)) return GetDefault();
             if (string.IsNullOrWhiteSpace(root) || root.Length > 240
                 || root.IndexOfAny(new[] { '"', '*', '?', '<', '>', '|', '/' }) >= 0)
                 throw Rejected();
@@ -56,6 +59,19 @@ namespace HDRCalibrate.Dwm
                     throw new UnauthorizedAccessException("Der HDRCalibrate-Requests-Ordner darf kein Reparse Point sein.");
             }
             return full;
+        }
+
+        private static bool IsOwnDefault(string root)
+        {
+            if (string.IsNullOrWhiteSpace(root)) return false;
+            try
+            {
+                return string.Equals(Path.GetFullPath(root).TrimEnd('\\'), GetDefault(), StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException || ex is PathTooLongException)
+            {
+                return false;
+            }
         }
 
         private static UnauthorizedAccessException Rejected()
